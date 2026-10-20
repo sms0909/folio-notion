@@ -1,0 +1,16 @@
+{
+  "name": "folio-workspace",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "e2e": "^0.21.2",
+    "@e2e-dev/web": "^0.15.2"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "test:e2e": "e2e run",
+    "test:research": "e2e run --config research.config.ts",
+    "check": "node --check dist/app.js && node --check dist/store.js && node --check server.mjs"
+  }
+}
