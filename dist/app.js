@@ -1,3 +1,4 @@
+import { databaseHTML as renderDatabaseHTML, databaseResults, filteredTasks } from './database-view.js';
 import { icon } from './icons.js';
 import { block, uid, statuses, priorities, blockTypes, loadWorkspace, initialWorkspace, saveWorkspace, STORAGE_KEY, createPage, duplicatePage, trashPage, restorePage, descendants, validateWorkspace, pageMarkdown } from './store.js';
 
@@ -9,7 +10,8 @@ try { state = loadWorkspace(); } catch { state = initialWorkspace(); startupErro
 let persistenceBlocked = !!startupError;
 let lastSavedRaw = null;
 try { lastSavedRaw = localStorage.getItem(STORAGE_KEY); } catch {}
-const ui = { sidebar: false, collapsed: false, view: 'table', query: '', status: '', sort: false, menu: null, blockMenu: null, modal: null, expanded: new Set(['wiki']), lastFocus: null, pendingImport: null, draggedTask: null, draggedBlock: null };
+const savedDatabase = state.settings.database || {};
+const ui = { sidebar: false, collapsed: false, view: savedDatabase.view === 'board' ? 'board' : 'table', query: '', status: statuses.includes(savedDatabase.status) ? savedDatabase.status : '', sort: ['asc', 'desc'].includes(savedDatabase.sort) ? savedDatabase.sort : 'none', menu: null, blockMenu: null, modal: null, expanded: new Set(['wiki']), lastFocus: null, pendingImport: null, draggedTask: null, draggedBlock: null };
 const current = () => state.pages.find(p => p.id === state.activeId && !p.deleted) || state.pages.find(p => !p.deleted);
 const pageName = page => page.title.trim() || '제목 없음';
 const formatDate = value => value ? `${Number(value.slice(5, 7))}월 ${Number(value.slice(8, 10))}일` : '날짜 없음';
@@ -45,8 +47,8 @@ function sidebar() {
     </div>
     <div class="nav-section"><div class="section-heading">즐겨찾기<span>${icon('star')}</span></div>${fav.length ? fav.map(p => `<button class="favorite-link" data-action="open" data-id="${esc(p.id)}" aria-label="즐겨찾기 페이지: ${esc(pageName(p))}">${icon(p.icon)}<span data-page-name="${esc(p.id)}">${esc(pageName(p))}</span></button>`).join('') : '<p class="sidebar-hint">자주 찾는 페이지에 별을 눌러 보세요.</p>'}</div>
     <div class="nav-section private-pages"><div class="section-heading">개인 페이지<button class="icon-button" data-action="new" aria-label="빠른 페이지 만들기">${icon('plus')}</button></div>${tree()}<button class="new-page" data-action="new" aria-label="새 페이지">${icon('plus')}새 페이지</button></div>
-    <div class="sidebar-bottom">${navButton('settings', '설정', 'settings', 'aria-label="설정"')}${navButton('trash', '휴지통', 'trash', 'aria-label="휴지통"')}<div class="local-note">${icon('shield')}이 브라우저에 안전하게 저장</div></div></nav>
-    <div class="sidebar-footer"><span class="folio-wordmark">folio<span>.</span></span><span>생각을 담는 공간</span></div>
+    <div class="sidebar-bottom">${navButton('account', '계정', 'user', 'aria-label="계정"')}${navButton('settings', '설정', 'settings', 'aria-label="설정"')}${navButton('trash', '휴지통', 'trash', 'aria-label="휴지통"')}<div class="local-note">${icon('shield')}이 브라우저에 안전하게 저장</div></div></nav>
+    <div class="sidebar-footer"><span class="folio-wordmark">folio<span>.</span></span><a class="footer-signout" href="/signout-with-chatgpt?return_to=%2F" target="_top" aria-label="ChatGPT 로그아웃">${icon('external')}로그아웃</a></div>
   </aside>`;
 }
 function breadcrumb(page) {
@@ -66,21 +68,6 @@ function blockHTML(b, i) {
 function editor(page) {
   return `<div class="editor" aria-label="페이지 편집기">${page.blocks.map(blockHTML).join('')}</div><button class="add-block-line" data-action="append-block">${icon('plus')}블록 추가<span>/ 를 눌러 더 많은 옵션 보기</span></button>`;
 }
-function filteredTasks() {
-  const q = ui.query.toLowerCase(); const tasks = state.tasks.filter(t => (!ui.status || t.status === ui.status) && `${t.title} ${t.status} ${t.priority} ${t.assignee}`.toLowerCase().includes(q));
-  return ui.sort ? tasks.sort((a, b) => (a.date || '9999').localeCompare(b.date || '9999')) : tasks;
-}
-const badge = (value, type = 'status') => `<span class="badge ${type} ${value === '완료' ? 'green' : value === '진행 중' ? 'blue' : value === '높음' ? 'red' : value === '낮음' ? 'gray' : 'neutral'}">${type === 'status' ? '<i></i>' : ''}${esc(value)}</span>`;
-function taskRow(t) {
-  return `<tr><td><button class="task-name" data-action="edit-task" data-id="${esc(t.id)}" aria-label="작업 열기: ${esc(t.title)}">${icon('file')}<span>${esc(t.title)}</span><span class="row-open">열기 ${icon('external')}</span></button></td><td>${badge(t.status)}</td><td>${badge(t.priority, 'priority')}</td><td>${t.assignee ? `<span class="assignee"><i>${esc(t.assignee.slice(0, 1))}</i>${esc(t.assignee)}</span>` : '<span class="muted">미지정</span>'}</td><td class="date-cell">${formatDate(t.date)}</td></tr>`;
-}
-function databaseHTML() {
-  const tasks = filteredTasks();
-  return `<div class="database-heading"><div><span class="eyebrow">MAKE IT HAPPEN</span><h2>한 걸음씩, 프로젝트</h2><p>해야 할 일을 정리하고 진행 상황을 한눈에 확인하세요.</p></div><span class="database-total">${state.tasks.filter(t => t.status === '완료').length} / ${state.tasks.length} 완료</span></div>
-  <div class="database-toolbar"><div class="db-tabs" role="tablist" aria-label="데이터베이스 보기"><button role="tab" aria-selected="${ui.view === 'table'}" class="${ui.view === 'table' ? 'selected' : ''}" data-action="view-table">${icon('table')}표</button><button role="tab" aria-selected="${ui.view === 'board'}" class="${ui.view === 'board' ? 'selected' : ''}" data-action="view-board">${icon('board')}보드</button></div><div class="db-actions"><label class="db-search">${icon('search')}<input type="search" aria-label="데이터베이스 검색" placeholder="검색" value="${esc(ui.query)}"></label><select aria-label="상태 필터" class="filter-select"><option value="">모든 상태</option>${statuses.map(s => `<option ${ui.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select><button class="icon-button ${ui.sort ? 'toggled' : ''}" data-action="sort" aria-label="마감일순 정렬" aria-pressed="${ui.sort}">${icon('sort')}</button><button class="button primary small" data-action="new-task" aria-label="새 작업">${icon('plus')}새 작업</button></div></div>
-  ${ui.view === 'table' ? `<div class="table-wrap"><table aria-label="프로젝트 데이터베이스"><thead><tr><th class="title-column"><span class="property-type">Aa</span>작업 이름</th><th>${icon('clock')}상태</th><th>${icon('filter')}우선순위</th><th>${icon('user')}담당자</th><th>${icon('calendar')}마감일</th></tr></thead><tbody>${tasks.map(taskRow).join('')}</tbody></table>${!tasks.length ? '<div class="db-empty">조건에 맞는 작업이 없습니다.</div>' : ''}<button class="table-new" data-action="new-task">${icon('plus')}새 항목</button></div>` : `<div class="board">${statuses.map(s => `<section class="board-column" role="region" aria-label="${s}" data-drop-status="${s}"><div class="board-column-heading">${badge(s)}<span>${tasks.filter(t => t.status === s).length}</span><button class="icon-button" data-action="new-task" data-status="${s}" aria-label="${s} 작업 추가">${icon('plus')}</button></div>${tasks.filter(t => t.status === s).map(t => `<button class="board-card" draggable="true" data-drag-task="${esc(t.id)}" data-action="edit-task" data-id="${esc(t.id)}" aria-label="작업 열기: ${esc(t.title)}"><span>${icon('file')}${esc(t.title)}</span><div>${badge(t.priority, 'priority')}<small>${t.date ? formatDate(t.date) : ''}</small></div></button>`).join('')}<button class="board-new" data-action="new-task" data-status="${s}">${icon('plus')}새 작업 추가</button></section>`).join('')}</div>`}
-  <div class="database-footer"><span>${tasks.length}개의 작업</span><span>변경 사항은 자동으로 저장됩니다</span></div>`;
-}
 function quickLinks() {
   return `<div class="quick-links"><button data-action="open" data-id="wiki" class="quick-card"><span class="card-icon sage">${icon('book')}</span><span><strong>팀 위키</strong><small>함께 쌓아가는 지식</small></span>${icon('arrow')}</button><button data-action="open" data-id="ideas" class="quick-card"><span class="card-icon peach">${icon('bulb')}</span><span><strong>아이디어 노트</strong><small>떠오르는 생각을 놓치지 않도록</small></span>${icon('arrow')}</button></div>`;
 }
@@ -98,7 +85,23 @@ function render() {
   if (persistenceBlocked || persist.warned) $('#save-state').innerHTML = '<span class="save-error">저장 안 됨 · 백업 필요</span>';
 }
 function resizeBlocks() { $$('.block-input').forEach(el => { el.style.height = 'auto'; el.style.height = `${el.scrollHeight}px`; }); }
-function renderDatabase() { if ($('#database')) $('#database').innerHTML = databaseHTML(); }
+function renderDatabase() { if ($('#database')) $('#database').innerHTML = renderDatabaseHTML(state.tasks, ui, !persistenceBlocked && !persist.warned); }
+function refreshDatabaseResults() {
+  if (!$('#database-results')) return;
+  $('#database-results').innerHTML = databaseResults(state.tasks, ui);
+  refreshDatabaseSummary();
+  const clear = $('[data-action="clear-db-search"]'); if (clear) clear.hidden = !ui.query;
+}
+function refreshDatabaseSummary() {
+  if ($('#database-count')) $('#database-count').textContent = `${filteredTasks(state.tasks, ui).length}개의 작업${ui.status || ui.query.trim() ? ` · 전체 ${state.tasks.length}개` : ''}`;
+  if ($('.database-total')) $('.database-total').textContent = `전체 ${state.tasks.filter(t => t.status === '완료').length} / ${state.tasks.length} 완료`;
+  if ($('#database-save-state')) $('#database-save-state').textContent = persistenceBlocked || persist.warned ? '저장 안 됨 · 백업 필요' : '모든 변경 사항 저장됨';
+}
+function saveDatabasePrefs() { state.settings.database = { view: ui.view, status: ui.status, sort: ui.sort }; persist(); }
+function openAccount() {
+  const hosted = location.hostname.endsWith('.chatgpt.site');
+  showModal('account', '계정 및 로그인', `<div class="account-summary">${icon('user')}<div><strong>${hosted ? 'ChatGPT로 보호된 워크스페이스' : '로컬 미리보기'}</strong><p>${hosted ? '앱 접근 권한은 현재 로그인한 ChatGPT 계정으로 확인합니다.' : '로컬 서버에는 ChatGPT 로그인 세션이 없습니다.'}</p></div></div><p class="dialog-description">계정을 바꾸려면 로그아웃 후 다시 로그인하세요. 접근 권한이 있는 계정만 앱을 열 수 있습니다.</p><div class="privacy-note">${icon('shield')}<div><strong>로그아웃해도 이 브라우저의 문서는 삭제되지 않습니다.</strong><p>문서는 계정별 서버 저장이 아닌 브라우저 저장 방식입니다. 공용 기기에서는 백업 후 브라우저 데이터를 관리하세요.</p></div></div><div class="account-actions"><a class="button" href="/signin-with-chatgpt?return_to=%2F" target="_top">ChatGPT 로그인</a><a class="button primary" href="/signout-with-chatgpt?return_to=%2F" target="_top">ChatGPT 로그아웃</a></div>`);
+}
 function refreshSidebar() { const holder = document.createElement('div'); holder.innerHTML = sidebar(); $('.sidebar').replaceWith(holder.firstElementChild); }
 function updateTitleUI() { $$('[data-page-name]').filter(el => el.dataset.pageName === current().id).forEach(el => { el.textContent = pageName(current()); }); document.title = `${pageName(current())} — Folio`; }
 const typeOptions = [ ['text', '텍스트', 'text', '일반 텍스트를 입력합니다'], ['h1', '제목 1', 'text', '큰 섹션 제목'], ['h2', '제목 2', 'text', '중간 크기의 제목'], ['bullet', '글머리 기호', 'bullet', '간결하게 목록을 작성합니다'], ['todo', '할 일 목록', 'check', '완료할 일을 체크합니다'], ['quote', '인용', 'quote', '기억하고 싶은 문장'], ['callout', '콜아웃', 'bulb', '중요한 정보를 강조합니다'], ['divider', '구분선', 'more', '내용 사이에 여백을 만듭니다'] ];
@@ -175,10 +178,12 @@ document.addEventListener('click', event => {
     case 'settings': openSettings(); break;
     case 'trash': openTrash(); break;
     case 'close-modal': closeModal(); break;
-    case 'view-table': ui.view = 'table'; renderDatabase(); break;
-    case 'view-board': ui.view = 'board'; renderDatabase(); break;
-    case 'sort': ui.sort = !ui.sort; renderDatabase(); break;
-    case 'new-task': if (state.tasks.length >= 5000) { toast('작업은 최대 5,000개까지 만들 수 있습니다.', true); break; } openTask(null, target.dataset.status || '시작 전'); break;
+    case 'view-table': ui.view = 'table'; saveDatabasePrefs(); renderDatabase(); break;
+    case 'view-board': ui.view = 'board'; saveDatabasePrefs(); renderDatabase(); break;
+    case 'sort': ui.sort = ui.sort === 'none' ? 'asc' : ui.sort === 'asc' ? 'desc' : 'none'; saveDatabasePrefs(); renderDatabase(); break;
+    case 'clear-db-search': ui.query = ''; $('[aria-label="데이터베이스 검색"]').value = ''; refreshDatabaseResults(); $('[aria-label="데이터베이스 검색"]').focus(); break;
+    case 'account': openAccount(); break;
+    case 'new-task': if (state.tasks.length >= 5000) { toast('작업은 최대 5,000개까지 만들 수 있습니다.', true); break; } openTask(null, target.dataset.status || ui.status || '시작 전'); break;
     case 'edit-task': openTask(id); break;
     case 'delete-task': state.tasks = state.tasks.filter(t => t.id !== id); persist(); closeModal(); renderDatabase(); toast('작업을 삭제했습니다.'); break;
     case 'export-page': download(`${pageName(current())}.md`, pageMarkdown(current()), 'text/markdown;charset=utf-8'); toast('페이지를 Markdown으로 내보냈습니다.'); break;
@@ -200,12 +205,17 @@ document.addEventListener('input', event => {
   if (el.id === 'page-title') { current().title = el.value; persist(); updateTitleUI(); }
   if (el.dataset.editBlock) { const b = current().blocks.find(b => b.id === el.dataset.editBlock); b.text = el.value.slice(0, 100000); if (el.value !== b.text) el.value = b.text; persist(); el.style.height = 'auto'; el.style.height = `${el.scrollHeight}px`; if (el.value === '/') renderBlockMenu(b.id); else if (ui.blockMenu === b.id && !el.value.startsWith('/')) removePopovers(); }
   if (el.getAttribute('aria-label') === '워크스페이스 검색') $('#search-results').innerHTML = searchResults(el.value);
-  if (el.getAttribute('aria-label') === '데이터베이스 검색') { const pos = el.selectionStart; ui.query = el.value; renderDatabase(); const next = $('[aria-label="데이터베이스 검색"]'); next.focus(); if (next.type !== 'search') next.setSelectionRange(pos, pos); }
+  if (el.getAttribute('aria-label') === '데이터베이스 검색') { ui.query = el.value; refreshDatabaseResults(); }
+  if (el.dataset.taskField === 'assignee') { const task = state.tasks.find(t => t.id === el.dataset.id); if (task) { task.assignee = el.value.slice(0, 100); persist(); refreshDatabaseSummary(); } }
 });
 document.addEventListener('change', async event => {
   const el = event.target;
   if (el.dataset.check) { current().blocks.find(b => b.id === el.dataset.check).checked = el.checked; persist(); $(`[data-edit-block="${el.dataset.check}"]`).classList.toggle('checked', el.checked); }
-  if (el.getAttribute('aria-label') === '상태 필터') { ui.status = el.value; renderDatabase(); }
+  if (el.getAttribute('aria-label') === '상태 필터') { ui.status = el.value; saveDatabasePrefs(); renderDatabase(); }
+  if (['status', 'priority', 'date'].includes(el.dataset.taskField)) {
+    const task = state.tasks.find(t => t.id === el.dataset.id);
+    if (task) { task[el.dataset.taskField] = el.value; persist(); refreshDatabaseResults(); }
+  }
   if (el.id === 'import-file' && el.files[0]) {
     try { if (el.files[0].size > 5_000_000) throw new Error('5MB 이하의 파일을 선택해 주세요.'); ui.pendingImport = validateWorkspace(JSON.parse(await el.files[0].text())); $('#import-feedback').innerHTML = `<div class="import-confirm"><p>현재 워크스페이스를 백업의 페이지 ${ui.pendingImport.pages.length}개로 교체합니다. 먼저 현재 데이터를 내보내는 것을 권장합니다.</p><button type="button" class="button danger" data-action="confirm-import">백업으로 교체</button><button type="button" class="button" data-action="cancel-import">가져오기 취소</button></div>`; }
     catch (error) { ui.pendingImport = null; $('#import-feedback').textContent = error.message || '백업을 읽을 수 없습니다.'; }
@@ -218,6 +228,11 @@ document.addEventListener('submit', event => {
     const title = String(data.get('title')).trim(); if (!title) { $('[name="title"]', form).focus(); return; }
     const id = form.dataset.taskId || uid(); const item = { id, title, status: data.get('status'), priority: data.get('priority'), assignee: String(data.get('assignee')).trim(), date: data.get('date'), note: String(data.get('note')).slice(0, 100000) };
     const index = state.tasks.findIndex(t => t.id === id); if (index === -1) state.tasks.push(item); else state.tasks[index] = item;
+    if (index === -1) {
+      if (ui.query && !`${item.title} ${item.status} ${item.priority} ${item.assignee} ${item.date}`.toLowerCase().includes(ui.query.trim().toLowerCase())) ui.query = '';
+      if (ui.status && ui.status !== item.status) ui.status = '';
+      state.settings.database = { view: ui.view, status: ui.status, sort: ui.sort };
+    }
     persist(); closeModal(); renderDatabase(); toast('작업을 저장했습니다.');
   }
   if (form.id === 'settings-form') { const name = String(data.get('name')).trim(); if (!name) return; state.settings.name = name; state.settings.theme = data.get('theme'); persist(); closeModal(false); render(); toast('설정을 저장했습니다.'); }
@@ -227,7 +242,7 @@ document.addEventListener('keydown', event => {
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); openSearch(); return; }
   if ((event.ctrlKey || event.metaKey) && event.altKey && event.key.toLowerCase() === 'n') { event.preventDefault(); addPage(); return; }
   if (event.key === 'Escape') { removePopovers(); closeModal(); if (ui.sidebar) { ui.sidebar = false; render(); } }
-  if (ui.modal && event.key === 'Tab') { const controls = $$('button:not([disabled]), input:not([hidden]), select, textarea, [tabindex="0"]', $('.modal')).filter(el => el.getClientRects().length); const first = controls[0], last = controls.at(-1); if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); } else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); } }
+  if (ui.modal && event.key === 'Tab') { const controls = $$('button:not([disabled]), a[href], input:not([hidden]), select, textarea, [tabindex="0"]', $('.modal')).filter(el => el.getClientRects().length); const first = controls[0], last = controls.at(-1); if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); } else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); } }
   const el = event.target;
   if (el.dataset.editBlock && event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); removePopovers(); const index = current().blocks.findIndex(b => b.id === el.dataset.editBlock); const old = current().blocks[index]; const start = el.selectionStart; const b = block(['todo', 'bullet'].includes(old.type) ? old.type : 'text', el.value.slice(el.selectionEnd)); old.text = el.value.slice(0, start); current().blocks.splice(index + 1, 0, b); persist(); render(); focusBlock(b.id); }
   if (el.dataset.editBlock && event.key === 'Backspace' && !el.value && current().blocks.length > 1) { event.preventDefault(); const list = current().blocks; const index = list.findIndex(b => b.id === el.dataset.editBlock); const focusId = list[Math.max(0, index - 1)].id; list.splice(index, 1); persist(); render(); focusBlock(focusId); }

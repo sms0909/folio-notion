@@ -1,0 +1,41 @@
+[hidden]{display:none!important}
+.signout-link{text-decoration:none;font-size:12px;color:#7d8474}
+.footer-signout{display:inline-flex;align-items:center;gap:5px;padding:6px;border-radius:4px;text-decoration:none;font-size:11px;color:#6f7b60}
+.footer-signout .icon{width:13px;height:13px}
+.footer-signout:hover{background:var(--hover);color:var(--text)}
+.account-summary{display:flex;gap:14px;align-items:center;margin:5px 0 18px;padding:15px;background:var(--surface);border:1px solid var(--line);border-radius:8px}
+.account-summary>.icon{width:32px;height:32px;color:#7d8c6a}
+.account-summary strong{font-size:13px;font-weight:600}
+.account-summary p{font-size:11px;color:var(--muted);line-height:1.8;margin:6px 0 0}
+.account-actions{display:flex;gap:9px;justify-content:flex-end;margin-top:24px}
+.account-actions a{text-decoration:none}
+.sort-button{display:inline-flex;align-items:center;gap:4px;font-size:10px;color:#929d84;border-radius:5px;padding:6px;white-space:nowrap}
+.sort-button .icon{width:14px;height:14px}
+.sort-button:hover{background:var(--hover)}
+.sort-button.toggled{color:var(--blue);background:#eaf1fb}
+.db-search input{width:100px;font-size:11px}
+.db-search:focus-within input{width:140px}
+.db-search-clear{width:22px;height:25px}
+.db-search-clear .icon{width:12px;height:12px}
+.cell-select{border:1px solid transparent;border-radius:5px;max-width:100%;width:100%;padding:5px 4px;font-size:11px;cursor:pointer;min-height:30px;background:var(--surface);color:var(--text)}
+.cell-select:hover{border-color:#b4c7a0}
+.cell-select.blue{background:#eaf1fa;color:#507eae}
+.cell-select.green{background:#eaf2e8;color:#557e54}
+.cell-select.neutral{background:#edefe8;color:#727e64}
+.cell-select.red{background:#f9eae5;color:#a66756}
+.cell-select.gray{background:#f0f2ed;color:#7a856e}
+.cell-select.priority.neutral{background:#f7f1df;color:#928257}
+.cell-input{width:100%;min-width:0;padding:6px;border:1px solid transparent;border-radius:4px;background:transparent;font-size:11px;min-height:30px;color:var(--text)}
+.cell-input:hover{background:var(--surface);border-color:var(--line)}
+.cell-input:focus{background:var(--bg);border-color:var(--blue)}
+.cell-input::placeholder{color:var(--muted)}
+.cell-date{font-family:inherit;font-size:10px;min-width:117px;padding:5px 2px}
+.task-name{font-size:12px}
+th.title-column{width:33%}th:nth-child(2){width:15%}th:nth-child(3){width:13%}th:nth-child(4){width:16%}th:nth-child(5){width:23%}
+table{min-width:710px}
+th{font-size:11px}
+td{padding-top:5px;padding-bottom:5px}
+html[data-theme="dark"] .cell-select{filter:brightness(.8)}
+html[data-theme="dark"] .sort-button.toggled{background:#2c3a49;color:#a3c5f1}
+@media(max-width:1100px){.db-actions{gap:6px}.db-search input{width:80px}.db-search:focus-within input{width:100px}}
+@media(max-width:760px){.db-search input,.db-search:focus-within input{width:100%;min-width:0}.sort-button{font-size:9px;padding:5px 3px}.db-actions{gap:5px}.db-actions>.filter-select{max-width:78px}.db-search{min-width:55px}.account-actions{flex-direction:column}.account-summary p{font-size:10px}.database-heading p{max-width:245px;line-height:1.8}.sidebar-bottom{padding-top:20px}}

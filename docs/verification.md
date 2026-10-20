@@ -2,6 +2,8 @@
 
 Date: 2026-10-20. Platform: Windows x64, Node.js 22.23.2. Runner: tester-army/e2e 0.21.2, web engine 0.15.2, Chromium 156.
 
+Latest repair verification (2026-10-21): **41/41 passed**, run `01a15b99-643d-7806-9ead-07bb9270dea4`, 33.16 seconds. See [repair details](repair-2026-10-21.md) for direct cell editing, persistent database controls, account links, and the authentication verification boundary.
+
 ## Results
 
 | Check | Result |
