@@ -29,6 +29,7 @@ const isId = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,100}$/.test
 export function validateWorkspace(data) {
   if (!data || data.version !== 1 || !Array.isArray(data.pages) || data.pages.length < 1 || data.pages.length > 1000 || !Array.isArray(data.tasks) || data.tasks.length > 5000) throw new Error('올바른 Folio 백업 파일이 아닙니다.');
   if (!data.settings || !isText(data.settings.name, 120) || !['light', 'dark'].includes(data.settings.theme)) throw new Error('워크스페이스 설정이 올바르지 않습니다.');
+  if (data.workspaceId !== undefined && !isId(data.workspaceId)) throw new Error('워크스페이스 식별자가 올바르지 않습니다.');
   const ids = new Set(); const blocks = new Set();
   for (const p of data.pages) {
     if (!isId(p.id) || ids.has(p.id) || !isText(p.title, 500) || !['document', 'home', 'database'].includes(p.type) || !isText(p.icon, 30) || typeof p.favorite !== 'boolean' || typeof p.deleted !== 'boolean' || !Array.isArray(p.blocks) || p.blocks.length > 10000 || !(p.parentId === null || isId(p.parentId)) || !isText(p.updatedAt, 100) || !(p.deletedBatch == null || isId(p.deletedBatch))) throw new Error('페이지 데이터가 올바르지 않습니다.');
@@ -81,7 +82,23 @@ export function trashPage(state, id) {
   const batch = uid(); const ids = descendants(state, id);
   state.pages.forEach(p => { if (ids.has(p.id) && !p.deleted) { p.deleted = true; p.deletedBatch = batch; } });
   if (!state.pages.some(p => !p.deleted)) createPage(state, { title: '새로운 시작' });
-  state.activeId = state.pages.find(p => !p.deleted).id;
+  if (!state.pages.some(p => p.id === state.activeId && !p.deleted)) state.activeId = state.pages.find(p => !p.deleted).id;
+}
+export function movePage(state, id, parentId = null, beforeId = null) {
+  const page = state.pages.find(p => p.id === id && !p.deleted);
+  if (!page) throw new Error('이동할 페이지를 찾지 못했습니다.');
+  if (parentId && (!state.pages.some(p => p.id === parentId && !p.deleted) || descendants(state, id).has(parentId))) throw new Error('페이지를 자신이나 하위 페이지 안으로 이동할 수 없습니다.');
+  const before = beforeId ? state.pages.find(p => p.id === beforeId && p.parentId === parentId && !p.deleted) : null;
+  if (beforeId && !before) throw new Error('이동 위치를 찾지 못했습니다.');
+  if (beforeId === id) return;
+  page.parentId = parentId;
+  state.pages = state.pages.filter(p => p.id !== id);
+  if (before) state.pages.splice(state.pages.findIndex(p => p.id === before.id), 0, page);
+  else {
+    let index = -1;
+    state.pages.forEach((p, i) => { if (p.parentId === parentId) index = i; });
+    state.pages.splice(index + 1, 0, page);
+  }
 }
 export function restorePage(state, id) {
   const page = state.pages.find(p => p.id === id); const batch = page.deletedBatch;

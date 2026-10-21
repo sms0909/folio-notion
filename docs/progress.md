@@ -11,4 +11,8 @@ Fresh code review found five correctness/security issues. Added five browser reg
 Fixed unsafe imported IDs, maximum-length duplicate titles, large editor text limits, slash-prefixed text conversion, and stale-tab overwrites.
 Final implementation run: 32/32 browser tests passed; research run: 4/4 passed. JavaScript syntax checks passed.
 Reviewer rechecked the five fixes and found no remaining critical blocker within the review scope.
-Current task: package tested static assets and privately publish the app.
+Initial app and first repair were published on the existing access-controlled Sites project.
+2026-10-21 sidebar completion: local workspace partitions, per-page menus/drag moves, section and width persistence, recents/library/search controls and database shortcuts implemented.
+Resolved four pending review regressions and the adjacent-divider focus edge case. Each new regression was reproduced before fixing.
+Latest full run: 67/67 passed, run 01a15c21-0234-7d0a-8edd-3201704a6f0d, 60.31 seconds; syntax checks passed. Desktop/mobile sidebar screenshots inspected. Reviewer found no remaining blocker in reviewed scope.
+Publication target: existing Sites project, retaining owner and external viewer access. Deployment status is reported by Sites, independently of this source snapshot.

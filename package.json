@@ -11,6 +11,6 @@
     "start": "node server.mjs",
     "test:e2e": "e2e run",
     "test:research": "e2e run --config research.config.ts",
-    "check": "node --check dist/app.js && node --check dist/store.js && node --check dist/database-view.js && node --check dist/icons.js && node --check server.mjs"
+    "check": "node --check dist/app.js && node --check dist/store.js && node --check dist/database-view.js && node --check dist/sidebar-view.js && node --check dist/workspaces.js && node --check dist/icons.js && node --check server.mjs"
   }
 }

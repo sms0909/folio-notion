@@ -2,7 +2,9 @@
 
 Date: 2026-10-20. Platform: Windows x64, Node.js 22.23.2. Runner: tester-army/e2e 0.21.2, web engine 0.15.2, Chromium 156.
 
-Latest repair verification (2026-10-21): **41/41 passed**, run `01a15b99-643d-7806-9ead-07bb9270dea4`, 33.16 seconds. See [repair details](repair-2026-10-21.md) for direct cell editing, persistent database controls, account links, and the authentication verification boundary.
+Latest verification (2026-10-21): **67/67 passed**, 0 failed, 0 skipped, run `01a15c21-0234-7d0a-8edd-3201704a6f0d`, 60.31 seconds. JavaScript syntax checks passed. See [sidebar completion](sidebar-2026-10-21.md), [review fixes](review-2026-10-21.md), and [earlier repair details](repair-2026-10-21.md).
+
+The 20 sidebar cases cover local workspace switching/restoration, failure preservation, per-page actions, hierarchy/reorder persistence, cyclic-drop rejection, section order, recent/library/search controls, pointer/keyboard resizing, database shortcuts, mobile layout and logout visibility. Six review cases cover table/editor focus, adjacent dividers and imported database preferences. Four original review cases and both divider cases failed before their fixes. Read-only code review found no remaining blocker within that scope. Desktop workspace-menu and mobile-sidebar captures were inspected.
 
 ## Results
 
