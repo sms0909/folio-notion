@@ -37,6 +37,8 @@ const paths = {
   grip: '<circle cx="9" cy="5" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="19" r="1"/>',
   copy: '<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V3H3v13h5"/>',
   restore: '<path d="M3 11a9 9 0 1 1 2 7M3 4v7h7M12 7v5l4 2"/>',
+  numbered: '<path d="M10 6h11M10 12h11M10 18h11M4 4.5h1.5v4M4 8.5h3M4 14.5c0-1.2 3-1.2 3 0 0 1-3 2-3 3.5h3"/>',
+  code: '<path d="m8 7-5 5 5 5M16 7l5 5-5 5M14 4l-4 16"/>',
   shield: '<path d="m12 3 9 4v5c0 5-5 8-9 10-4-2-9-5-9-10V7Z"/><path d="m8 12 3 3 5-6"/>',
 };
 export function icon(name, className = '') { return `<svg class="icon ${className}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${Object.hasOwn(paths, name) ? paths[name] : paths.file}</svg>`; }

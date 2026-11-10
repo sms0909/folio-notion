@@ -23,7 +23,7 @@ test('duplicate content has independent blocks and editing does not affect origi
   await screen.getByRole('menuitem', '페이지 복제').tap();
   await screen.getByLabel('블록 1 내용').fill('수정된 복사본');
   await screen.getByRole('button', '페이지 열기: 원본 문서', { exact: true }).tap();
-  await expect(screen.getByLabel('블록 1 내용')).toHaveValue('원본 내용');
+  await expect(screen.getByLabel('블록 1 내용')).toHaveText('원본 내용');
 });
 
 test('restoring a parent does not restore an independently trashed child', async ({ screen }) => {
@@ -132,7 +132,7 @@ test('new templates do not share mutable block content', async ({ screen }) => {
   await screen.getByLabel('블록 1 내용').fill('바뀐 회의 안건');
   await screen.getByRole('button', '템플릿', { exact: true }).tap();
   await screen.getByRole('button', '회의록 템플릿 사용').tap();
-  await expect(screen.getByLabel('블록 1 내용')).toHaveValue('회의 안건');
+  await expect(screen.getByLabel('블록 1 내용')).toHaveText('회의 안건');
 });
 
 test('local storage failure retains edits and allows a backup', async ({ app, browser, screen }) => {

@@ -27,7 +27,7 @@ test('new local workspace isolates pages and switching back restores edited orig
   await screen.getByRole('button', '워크스페이스 전환').tap();
   await screen.getByRole('menuitem', '워크스페이스 선택: Goodus의 워크스페이스', { exact: true }).tap();
   await expect(screen.getByLabel('페이지 제목')).toHaveValue('원래 공간의 비공개 문서');
-  await expect(screen.getByLabel('블록 1 내용')).toHaveValue('원래 공간에 보존할 내용');
+  await expect(screen.getByLabel('블록 1 내용')).toHaveText('원래 공간에 보존할 내용');
 });
 
 test('sidebar menu renames an inactive page without editing the current page', async ({ screen }) => {
@@ -49,7 +49,7 @@ test('sidebar duplicate creates an independent copy of the targeted page', async
   await screen.getByRole('button', '페이지 메뉴: 아이디어 노트', { exact: true }).tap();
   await screen.getByRole('menuitem', '페이지 복제', { exact: true }).tap();
   await expect(screen.getByLabel('페이지 제목')).toHaveValue('아이디어 노트 (복사본)');
-  await expect(screen.getByLabel('블록 1 내용')).toHaveValue('아직 다듬어지지 않아도 괜찮아요.');
+  await expect(screen.getByLabel('블록 1 내용')).toHaveText('아직 다듬어지지 않아도 괜찮아요.');
 });
 
 test('drag page into another page and preserve its nesting after reload', async ({ screen, browser }) => {

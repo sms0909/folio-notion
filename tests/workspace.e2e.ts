@@ -17,7 +17,7 @@ test('create and rename a page, edit a block, persist after reload', async ({ sc
   await screen.getByLabel('블록 1 내용').fill('다음 주 출시를 준비합니다.');
   await browser.reload();
   await expect(screen.getByLabel('페이지 제목')).toHaveValue('E2E 프로젝트 노트');
-  await expect(screen.getByLabel('블록 1 내용')).toHaveValue('다음 주 출시를 준비합니다.');
+  await expect(screen.getByLabel('블록 1 내용')).toHaveText('다음 주 출시를 준비합니다.');
 });
 
 test('slash menu creates a checkbox block and retains checked state', async ({ screen, browser }) => {
@@ -37,7 +37,7 @@ test('Enter adds a block, and block types can change', async ({ screen }) => {
   await screen.getByLabel('블록 2 내용').fill('두 번째 문단');
   await screen.getByRole('button', '블록 2 메뉴').tap();
   await screen.getByRole('option', '제목 2', { exact: true }).tap();
-  await expect(screen.getByLabel('블록 2 내용')).toHaveValue('두 번째 문단');
+  await expect(screen.getByLabel('블록 2 내용')).toHaveText('두 번째 문단');
   await expect(screen.getByTestId('block-2')).toHaveAttribute('data-type', 'h2');
 });
 
@@ -71,7 +71,7 @@ test('trash and restore a page with its content', async ({ screen }) => {
   await screen.getByRole('button', '복원: 복원할 문서').tap();
   await screen.getByRole('button', '닫기', { exact: true }).tap();
   await screen.getByRole('button', '페이지 열기: 복원할 문서', { exact: true }).tap();
-  await expect(screen.getByLabel('블록 1 내용')).toHaveValue('삭제되어도 보존될 내용');
+  await expect(screen.getByLabel('블록 1 내용')).toHaveText('삭제되어도 보존될 내용');
 });
 
 test('create database task, filter and inspect it in board view', async ({ screen }) => {
@@ -99,7 +99,7 @@ test('templates create editable pages', async ({ screen }) => {
   await screen.getByRole('button', '템플릿', { exact: true }).tap();
   await screen.getByRole('button', '회의록 템플릿 사용').tap();
   await expect(screen.getByLabel('페이지 제목')).toHaveValue('팀 회의록');
-  await expect(screen.getByLabel('블록 1 내용')).toHaveValue('회의 안건');
+  await expect(screen.getByLabel('블록 1 내용')).toHaveText('회의 안건');
 });
 
 test('settings update workspace name and persist dark theme', async ({ screen, browser }) => {

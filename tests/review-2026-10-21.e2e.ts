@@ -36,7 +36,7 @@ test('Backspace in an empty first block moves focus to the next block', async ({
   await screen.getByLabel('블록 1 내용').press('Enter');
   await screen.getByLabel('블록 2 내용').fill('남는 블록');
   await screen.getByLabel('블록 1 내용').press('Backspace');
-  await expect(screen.getByLabel('블록 1 내용')).toHaveValue('남는 블록');
+  await expect(screen.getByLabel('블록 1 내용')).toHaveText('남는 블록');
   await expect(screen.getByLabel('블록 1 내용')).toBeFocused();
 });
 

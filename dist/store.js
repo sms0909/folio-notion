@@ -1,7 +1,7 @@
 export const STORAGE_KEY = 'folio.workspace.v1';
 export const statuses = ['시작 전', '진행 중', '완료'];
 export const priorities = ['높음', '보통', '낮음'];
-export const blockTypes = ['text', 'h1', 'h2', 'bullet', 'todo', 'quote', 'callout', 'divider'];
+export const blockTypes = ['text', 'h1', 'h2', 'h3', 'bullet', 'numbered', 'todo', 'toggle', 'quote', 'callout', 'code', 'divider'];
 export const uid = () => crypto.randomUUID();
 export const block = (type = 'text', text = '', checked = false) => ({ id: uid(), type, text, checked });
 export function makePage(title = '제목 없음', options = {}) {
@@ -35,7 +35,7 @@ export function validateWorkspace(data) {
     if (!isId(p.id) || ids.has(p.id) || !isText(p.title, 500) || !['document', 'home', 'database'].includes(p.type) || !isText(p.icon, 30) || typeof p.favorite !== 'boolean' || typeof p.deleted !== 'boolean' || !Array.isArray(p.blocks) || p.blocks.length > 10000 || !(p.parentId === null || isId(p.parentId)) || !isText(p.updatedAt, 100) || !(p.deletedBatch == null || isId(p.deletedBatch))) throw new Error('페이지 데이터가 올바르지 않습니다.');
     ids.add(p.id);
     for (const b of p.blocks) {
-      if (!isId(b.id) || blocks.has(b.id) || !blockTypes.includes(b.type) || !isText(b.text) || typeof b.checked !== 'boolean') throw new Error('블록 데이터가 올바르지 않습니다.');
+      if (!isId(b.id) || blocks.has(b.id) || !blockTypes.includes(b.type) || !isText(b.text) || typeof b.checked !== 'boolean' || !(b.indent === undefined || (Number.isInteger(b.indent) && b.indent >= 0 && b.indent <= 6)) || !(b.open === undefined || typeof b.open === 'boolean')) throw new Error('블록 데이터가 올바르지 않습니다.');
       blocks.add(b.id);
     }
   }
@@ -107,6 +107,15 @@ export function restorePage(state, id) {
   if (page.parentId && state.pages.find(p => p.id === page.parentId)?.deleted) page.parentId = null;
 }
 export function pageMarkdown(page) {
-  const prefixes = { text: '', h1: '# ', h2: '## ', bullet: '- ', quote: '> ', callout: '> ', todo: '- [ ] ', divider: '' };
-  return `# ${page.title || '제목 없음'}\n\n` + page.blocks.map(b => b.type === 'divider' ? '---' : (b.type === 'todo' && b.checked ? '- [x] ' : prefixes[b.type]) + b.text).join('\n\n') + '\n';
+  const prefixes = { text: '', h1: '# ', h2: '## ', h3: '### ', bullet: '- ', toggle: '- ', quote: '> ', callout: '> ', todo: '- [ ] ' };
+  const fence = '```'; const counters = [];
+  const lines = page.blocks.map(b => {
+    const depth = Math.min(6, Math.max(0, b.indent | 0)); const pad = '    '.repeat(depth);
+    counters.length = depth + 1; counters[depth] = b.type === 'numbered' ? (counters[depth] || 0) + 1 : 0;
+    if (b.type === 'divider') return '---';
+    if (b.type === 'code') return [fence, ...b.text.split('\n'), fence].map(line => pad + line).join('\n');
+    if (b.type === 'numbered') return `${pad}${counters[depth]}. ${b.text}`;
+    return pad + (b.type === 'todo' && b.checked ? '- [x] ' : prefixes[b.type] ?? '') + b.text;
+  });
+  return `# ${page.title || '제목 없음'}\n\n` + lines.join('\n\n') + '\n';
 }

@@ -20,7 +20,7 @@ test('changing block type preserves slash-prefixed document text', async ({ scre
   await screen.getByLabel('블록 1 내용').fill('/api/users documentation');
   await screen.getByRole('button', '블록 1 메뉴').tap();
   await screen.getByRole('option', '제목 2', { exact: true }).tap();
-  await expect(screen.getByLabel('블록 1 내용')).toHaveValue('/api/users documentation');
+  await expect(screen.getByLabel('블록 1 내용')).toHaveText('/api/users documentation');
 });
 
 test('editor constrains text to the supported size without losing the workspace', async ({ screen, browser }) => {
@@ -30,7 +30,7 @@ test('editor constrains text to the supported size without losing the workspace'
   await screen.getByLabel('블록 1 내용').fill('가'.repeat(100000));
   await browser.reload();
   await expect(screen.getByLabel('페이지 제목')).toHaveValue('큰 본문 문서');
-  await expect(screen.getByLabel('블록 1 내용')).toHaveValue('가'.repeat(100000));
+  await expect(screen.getByLabel('블록 1 내용')).toHaveText('가'.repeat(100000));
 });
 
 test('backup with HTML in an identifier is rejected before rendering', async ({ screen, browser }) => {

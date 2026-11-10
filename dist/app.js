@@ -2,6 +2,8 @@ import { sidebarHTML, sidebarSettings } from './sidebar-view.js';
 import { listWorkspaces, switchLocalWorkspace, workspaceId } from './workspaces.js';
 import { databaseHTML as renderDatabaseHTML, databaseResults, filteredTasks } from './database-view.js';
 import { icon } from './icons.js';
+import { MAX_TEXT, listTypes, staticTypes, markdownShortcut, indentOf, numbering, hiddenBlocks, subtreeEnd, shiftIndent, slashMatches, readText, selectionOffsets, setSelection, caretOnEdge } from './blocks.js';
+import * as history from './history.js';
 import { block, uid, statuses, priorities, blockTypes, loadWorkspace, initialWorkspace, saveWorkspace, STORAGE_KEY, createPage, duplicatePage, trashPage, restorePage, descendants, movePage, validateWorkspace, pageMarkdown } from './store.js';
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -44,17 +46,22 @@ function breadcrumb(page) {
   while (cursor && !seen.has(cursor.id)) { seen.add(cursor.id); chain.unshift(cursor); cursor = state.pages.find(p => p.id === cursor.parentId); }
   return chain.map((p, i) => `${i ? '<span class="crumb-sep">/</span>' : ''}<button data-action="open" data-id="${esc(p.id)}" class="crumb">${icon(p.icon)}<span data-page-name="${esc(p.id)}">${esc(pageName(p))}</span></button>`).join('');
 }
-function blockHTML(b, i) {
-  const num = i + 1;
-  return `<div class="block-row block-${b.type}" data-testid="block-${num}" data-type="${b.type}" data-block-id="${esc(b.id)}" draggable="false">
+const placeholders = { h1: '제목 1', h2: '제목 2', h3: '제목 3', code: '코드를 입력하세요', toggle: '토글' };
+// A trailing line break needs a <br> so the browser gives the last empty line a box.
+const inlineHTML = b => `${esc(b.text)}${b.text.endsWith('\n') ? '<br>' : ''}`;
+function blockHTML(b, i, context) {
+  const num = i + 1; const open = b.open !== false;
+  return `<div class="block-row block-${b.type}" data-testid="block-${num}" data-type="${b.type}" data-block-id="${esc(b.id)}" data-indent="${indentOf(b)}" style="--indent:${indentOf(b)}" ${context.hidden.has(b.id) ? 'hidden' : ''} draggable="false">
     <div class="block-tools"><button class="block-tool" data-action="add-block" data-id="${esc(b.id)}" aria-label="블록 ${num} 아래 추가">${icon('plus')}</button><button class="block-tool" data-action="block-menu" data-id="${esc(b.id)}" aria-label="블록 ${num} 메뉴" draggable="true" data-drag-block="${esc(b.id)}">${icon('grip')}</button></div>
     ${b.type === 'todo' ? `<input class="todo-check" type="checkbox" data-check="${esc(b.id)}" aria-label="할 일 ${num} 완료" ${b.checked ? 'checked' : ''}>` : ''}
     ${b.type === 'bullet' ? '<span class="bullet-dot">•</span>' : ''}${b.type === 'callout' ? `<span class="callout-icon">${icon('bulb')}</span>` : ''}
-    ${b.type === 'divider' ? '<hr>' : `<textarea class="block-input ${b.checked ? 'checked' : ''}" rows="1" maxlength="100000" aria-label="블록 ${num} 내용" data-edit-block="${esc(b.id)}" placeholder="${b.type === 'h1' ? '제목 1' : b.type === 'h2' ? '제목 2' : '내용을 입력하거나 / 로 블록 추가'}" spellcheck="false">${esc(b.text)}</textarea>`}
+    ${b.type === 'numbered' ? `<span class="number-marker" data-testid="block-${num}-number">${context.numbers[i]}.</span>` : ''}${b.type === 'toggle' ? `<button class="toggle-arrow ${open ? 'open' : ''}" data-action="toggle-open" data-id="${esc(b.id)}" aria-label="토글 ${num} ${open ? '접기' : '펼치기'}" aria-expanded="${open}">${icon('chevron')}</button>` : ''}
+    ${b.type === 'divider' ? '<hr>' : `<div class="block-input ${b.checked ? 'checked' : ''}" contenteditable="true" role="textbox" aria-multiline="true" maxlength="${MAX_TEXT}" aria-label="블록 ${num} 내용" data-edit-block="${esc(b.id)}" data-placeholder="${placeholders[b.type] || '내용을 입력하거나 / 로 블록 추가'}" spellcheck="false">${inlineHTML(b)}</div>`}
   </div>`;
 }
 function editor(page) {
-  return `<div class="editor" aria-label="페이지 편집기">${page.blocks.map(blockHTML).join('')}</div><button class="add-block-line" data-action="append-block">${icon('plus')}블록 추가<span>/ 를 눌러 더 많은 옵션 보기</span></button>`;
+  const context = { numbers: numbering(page.blocks), hidden: hiddenBlocks(page.blocks) };
+  return `<div class="editor" aria-label="페이지 편집기">${page.blocks.map((b, i) => blockHTML(b, i, context)).join('')}</div><button class="add-block-line" data-action="append-block">${icon('plus')}블록 추가<span>/ 를 눌러 더 많은 옵션 보기</span></button>`;
 }
 function quickLinks() {
   return `<div class="quick-links"><button data-action="open" data-id="wiki" class="quick-card"><span class="card-icon sage">${icon('book')}</span><span><strong>팀 위키</strong><small>함께 쌓아가는 지식</small></span>${icon('arrow')}</button><button data-action="open" data-id="ideas" class="quick-card"><span class="card-icon peach">${icon('bulb')}</span><span><strong>아이디어 노트</strong><small>떠오르는 생각을 놓치지 않도록</small></span>${icon('arrow')}</button></div>`;
@@ -70,10 +77,9 @@ function render() {
     <article class="page-content ${page.type === 'home' ? 'with-cover' : ''}"><div class="page-icon ${page.type === 'home' ? 'home-page-icon' : ''}">${icon(page.icon)}</div><div class="page-title-line"><input id="page-title" aria-label="페이지 제목" value="${esc(page.title)}" maxlength="500" placeholder="제목 없음" spellcheck="false"></div><div class="page-meta"><span>${icon('clock')}나만의 속도로, 매일 조금씩</span><span class="meta-dot">·</span><span>개인 페이지</span></div>
     ${page.type !== 'database' ? editor(page) : ''}${page.type === 'home' ? quickLinks() : ''}${page.type === 'database' || page.type === 'home' ? '<section id="database" class="database" aria-label="프로젝트 관리"></section>' : ''}
     ${page.type === 'document' ? `<div class="document-bottom"><button class="button" data-action="subpage" data-id="${esc(page.id)}">${icon('plus')}하위 페이지 추가</button><span>기록은 생각을 선명하게 만듭니다.</span></div>` : ''}<footer class="page-footer"><span class="footer-logo">f.</span><span>조금 더 정리된 생각, 조금 더 가벼운 하루.</span><span class="footer-shortcut">${icon('shield')}로컬 자동 저장</span></footer></article></div></main>`;
-  renderDatabase(); resizeBlocks(); if (ui.menu) renderPageMenu(); if (ui.blockMenu) renderBlockMenu(ui.blockMenu);
+  renderDatabase(); if (ui.menu) renderPageMenu(); if (ui.blockMenu) renderBlockMenu(ui.blockMenu);
   if (persistenceBlocked || persist.warned) $('#save-state').innerHTML = '<span class="save-error">저장 안 됨 · 백업 필요</span>';
 }
-function resizeBlocks() { $$('.block-input').forEach(el => { el.style.height = 'auto'; el.style.height = `${el.scrollHeight}px`; }); }
 function renderDatabase() { if ($('#database')) $('#database').innerHTML = renderDatabaseHTML(state.tasks, ui, !persistenceBlocked && !persist.warned); }
 function refreshDatabaseResults() {
   if (!$('#database-results')) return;
@@ -103,8 +109,8 @@ function openAccount() {
 }
 function refreshSidebar() { const holder = document.createElement('div'); holder.innerHTML = sidebar(); $('.sidebar').replaceWith(holder.firstElementChild); }
 function updateTitleUI() { $$('[data-page-name]').filter(el => el.dataset.pageName === current().id).forEach(el => { el.textContent = pageName(current()); }); document.title = `${pageName(current())} — Folio`; }
-const typeOptions = [ ['text', '텍스트', 'text', '일반 텍스트를 입력합니다'], ['h1', '제목 1', 'text', '큰 섹션 제목'], ['h2', '제목 2', 'text', '중간 크기의 제목'], ['bullet', '글머리 기호', 'bullet', '간결하게 목록을 작성합니다'], ['todo', '할 일 목록', 'check', '완료할 일을 체크합니다'], ['quote', '인용', 'quote', '기억하고 싶은 문장'], ['callout', '콜아웃', 'bulb', '중요한 정보를 강조합니다'], ['divider', '구분선', 'more', '내용 사이에 여백을 만듭니다'] ];
-function removePopovers() { $$('.popover').forEach(el => el.remove()); ui.menu = null; ui.blockMenu = null; }
+const typeOptions = [ ['text', '텍스트', 'text', '일반 텍스트를 입력합니다', 'text paragraph 문단'], ['h1', '제목 1', 'text', '큰 섹션 제목', 'heading'], ['h2', '제목 2', 'text', '중간 크기의 제목', 'heading'], ['h3', '제목 3', 'text', '작은 크기의 제목', 'heading'], ['bullet', '글머리 기호', 'bullet', '간결하게 목록을 작성합니다', 'list 목록'], ['numbered', '번호 매기기 목록', 'numbered', '순서가 있는 목록을 작성합니다', 'list ordered 숫자'], ['todo', '할 일 목록', 'check', '완료할 일을 체크합니다', 'checkbox 체크'], ['toggle', '토글 목록', 'chevron', '내용을 접고 펼칩니다', 'collapse 접기'], ['quote', '인용', 'quote', '기억하고 싶은 문장', 'blockquote'], ['callout', '콜아웃', 'bulb', '중요한 정보를 강조합니다', '강조'], ['code', '코드', 'code', '고정폭 글꼴로 코드를 적습니다', 'pre 코드 블록'], ['divider', '구분선', 'more', '내용 사이에 여백을 만듭니다', 'hr line 선'] ];
+function removePopovers() { $$('.popover').forEach(el => el.remove()); ui.menu = null; ui.blockMenu = null; ui.slash = null; }
 function positionMenu(el, anchor) {
   if (!anchor) return;
   const r = anchor.getBoundingClientRect();
@@ -149,14 +155,20 @@ function reorderSibling(id, direction) {
   movePage(state, id, page.parentId, direction < 0 ? siblings[j].id : siblings[j + 1]?.id || null);
   ui.sidebarPrefs.pageSort = 'manual'; saveSidebar(); render();
 }
-function renderBlockMenu(id) {
-  removePopovers(); ui.blockMenu = id;
+// With `slash` the menu is driven from the keyboard while focus stays in the block:
+// it lists only the types matching the text typed after "/".
+function renderBlockMenu(id, slash = null) {
+  removePopovers();
   const b = current().blocks.find(b => b.id === id); if (!b) return;
+  const options = slash ? slashMatches(typeOptions, slash.query) : typeOptions; if (!options.length) return;
+  ui.blockMenu = id; ui.slash = slash && { query: slash.query, active: Math.min(Math.max(0, slash.active), options.length - 1) };
   const anchor = $(`[data-block-id="${id}"]`); const bounds = anchor.getBoundingClientRect();
   const el = document.createElement('div'); el.className = 'popover block-menu'; el.setAttribute('role', 'listbox'); el.setAttribute('aria-label', '블록 유형');
-  el.style.top = `${Math.max(12, Math.min(bounds.bottom + 3, window.innerHeight - 460))}px`; el.style.left = `${Math.max(10, Math.min(bounds.left + 15, window.innerWidth - 270))}px`;
-  el.innerHTML = `<div class="menu-caption">블록으로 전환</div>${typeOptions.map(([type, label, glyph, description]) => `<button role="option" aria-label="${label}" aria-selected="${b.type === type}" data-action="block-type" data-type="${type}" data-id="${id}"><span class="type-icon">${icon(glyph)}</span><span><strong>${label}</strong><small>${description}</small></span></button>`).join('')}<div class="menu-divider"></div><div class="block-actions"><button data-action="block-up" data-id="${id}" aria-label="블록 위로 이동">위로</button><button data-action="block-down" data-id="${id}" aria-label="블록 아래로 이동">아래로</button><button class="danger" data-action="block-delete" data-id="${id}">${icon('trash')}삭제</button></div>`;
+  const top = Math.max(12, Math.min(bounds.bottom + 3, window.innerHeight - 460));
+  el.style.top = `${top}px`; el.style.maxHeight = `${window.innerHeight - top - 12}px`; el.style.left = `${Math.max(10, Math.min(bounds.left + 15, window.innerWidth - 270))}px`;
+  el.innerHTML = `<div class="menu-caption">${slash?.query ? `"${esc(slash.query)}" 검색 결과` : '블록으로 전환'}</div>${options.map(([type, label, glyph, description], i) => `<button role="option" aria-label="${label}" aria-selected="${slash ? i === ui.slash.active : b.type === type}" data-action="block-type" data-type="${type}" data-id="${id}"><span class="type-icon">${icon(glyph)}</span><span><strong>${label}</strong><small>${description}</small></span></button>`).join('')}${slash?.query ? '' : `<div class="menu-divider"></div><div class="block-actions"><button data-action="block-up" data-id="${id}" aria-label="블록 위로 이동">위로</button><button data-action="block-down" data-id="${id}" aria-label="블록 아래로 이동">아래로</button><button data-action="block-duplicate" data-id="${id}" aria-label="블록 복제">${icon('copy')}복제</button><button class="danger" data-action="block-delete" data-id="${id}">${icon('trash')}삭제</button></div>`}`;
   document.body.append(el);
+  if (slash) $('[aria-selected="true"]', el)?.scrollIntoView({ block: 'nearest' });
 }
 function showModal(name, title, body, size = '') {
   removePopovers(); ui.lastFocus = document.activeElement; ui.modal = name; $('#app').inert = true;
@@ -196,13 +208,46 @@ const templates = [
 ];
 function openTemplates() { showModal('templates', '작은 시작을 돕는 템플릿', `<p class="dialog-description">빈 페이지 앞에서 망설이지 않도록. 나에게 맞는 틀을 골라 보세요.</p><div class="template-grid">${templates.map((t, i) => `<button class="template-card" data-action="use-template" data-index="${i}" aria-label="${t.label} 템플릿 사용"><span class="template-preview preview-${i}">${icon(t.icon)}<i></i><i></i><i></i></span><strong>${t.label}</strong><small>${t.description}</small><span class="template-cta">템플릿 사용 ${icon('arrow')}</span></button>`).join('')}</div>`, 'wide-modal'); }
 function download(name, content, type) { const url = URL.createObjectURL(new Blob([content], { type })); const link = document.createElement('a'); link.href = url; link.download = name.replace(/[<>:"/\\|?*]/g, '_'); link.click(); setTimeout(() => URL.revokeObjectURL(url), 2000); }
-function focusBlock(id) { const el = $(`[data-edit-block="${id}"]`); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } else $(`[data-block-id="${id}"] [data-action="block-menu"]`)?.focus(); }
+const editable = id => $(`[data-edit-block="${id}"]`);
+function focusBlock(id, offset = null) { const el = editable(id); if (el) { el.focus(); setSelection(el, offset ?? readText(el).length); } else $(`[data-block-id="${id}"] [data-action="block-menu"]`)?.focus(); }
+const remember = () => history.snapshot(current());
+function setBlockContent(el, b, caret = null) { el.innerHTML = inlineHTML(b); if (caret !== null) setSelection(el, caret); }
+function insertIntoBlock(el, b, pos, text) {
+  history.typing(current(), b.id);
+  b.text = (b.text.slice(0, pos.start) + text + b.text.slice(pos.end)).slice(0, MAX_TEXT);
+  setBlockContent(el, b, Math.min(pos.start + text.length, b.text.length)); persist();
+}
+// Converts a block to another type from the slash menu or a Markdown shortcut.
+function convertBlock(b, type, text) {
+  const list = current().blocks; b.type = type; b.text = text; removePopovers();
+  if (type !== 'divider') { persist(); render(); focusBlock(b.id, 0); return; }
+  const index = list.indexOf(b); let next = list[index + 1];
+  if (!next || staticTypes.includes(next.type)) { next = block(); list.splice(index + 1, 0, next); }
+  persist(); render(); focusBlock(next.id, 0);
+}
+function visibleNeighbor(index, direction) {
+  const list = current().blocks; const hidden = hiddenBlocks(list);
+  for (let i = index + direction; i >= 0 && i < list.length; i += direction) if (!hidden.has(list[i].id) && !staticTypes.includes(list[i].type)) return list[i];
+  return null;
+}
+function duplicateBlock(id) {
+  const list = current().blocks; const index = list.findIndex(b => b.id === id); if (index < 0) return;
+  if (list.length >= 10000) { toast('블록은 페이지당 최대 10,000개까지 만들 수 있습니다.', true); return; }
+  remember(); const copy = { ...structuredClone(list[index]), id: uid() };
+  list.splice(index + 1, 0, copy); removePopovers(); persist(); render(); focusBlock(copy.id);
+}
+function undoRedo(redo) {
+  const focused = document.activeElement?.dataset?.editBlock;
+  if (!(redo ? history.redo : history.undo)(current())) { toast(redo ? '다시 실행할 작업이 없습니다.' : '실행 취소할 작업이 없습니다.'); return; }
+  removePopovers(); persist(); render();
+  const list = current().blocks; focusBlock((list.find(b => b.id === focused) || list.at(-1)).id);
+}
 
 document.addEventListener('click', event => {
   const target = event.target.closest('[data-action]');
   if (!target) { if (!event.target.closest('.popover')) removePopovers(); if (event.target.dataset.backdrop) closeModal(); return; }
   const { action, id } = target.dataset;
-  if (!['block-type', 'block-menu', 'page-menu', 'block-delete', 'block-up', 'block-down'].includes(action)) removePopovers();
+  if (!['block-type', 'block-menu', 'page-menu', 'block-delete', 'block-up', 'block-down', 'block-duplicate'].includes(action)) removePopovers();
   switch (action) {
     case 'open': if (state.pages.some(p => p.id === id && !p.deleted)) go(id); else toast('이 페이지는 휴지통에 있습니다.', true); break;
     case 'open-home': go(state.pages.find(p => p.type === 'home' && !p.deleted)?.id || state.pages.find(p => !p.deleted).id); break;
@@ -238,12 +283,14 @@ document.addEventListener('click', event => {
     case 'import-workspace': $('#import-file').click(); break;
     case 'confirm-import': if (ui.pendingImport) { state = { ...ui.pendingImport, workspaceId: workspaceId(state) }; applyDatabasePrefs(); ui.sidebarPrefs = sidebarSettings(state); ui.expanded = new Set(ui.sidebarPrefs.expanded); ui.collapsed = ui.sidebarPrefs.collapsed; persistenceBlocked = false; lastSavedRaw = localStorage.getItem(STORAGE_KEY); persist.warned = false; persist(); closeModal(false); render(); toast('백업을 가져왔습니다.'); } break;
     case 'cancel-import': ui.pendingImport = null; $('#import-feedback').innerHTML = ''; break;
-    case 'append-block': { const b = block(); current().blocks.push(b); persist(); render(); focusBlock(b.id); break; }
-    case 'add-block': { const index = current().blocks.findIndex(b => b.id === id); const b = block(); current().blocks.splice(index + 1, 0, b); persist(); render(); focusBlock(b.id); break; }
+    case 'append-block': { remember(); const b = block(); current().blocks.push(b); persist(); render(); focusBlock(b.id); break; }
+    case 'add-block': { remember(); const list = current().blocks; const index = list.findIndex(b => b.id === id); const b = block(); if (indentOf(list[index])) b.indent = indentOf(list[index]); list.splice(subtreeEnd(list, index), 0, b); persist(); render(); focusBlock(b.id); break; }
     case 'block-menu': renderBlockMenu(id); break;
-    case 'block-type': { const b = current().blocks.find(b => b.id === id); b.type = target.dataset.type; if (b.text === '/') b.text = ''; removePopovers(); persist(); render(); focusBlock(id); break; }
-    case 'block-delete': { current().blocks = current().blocks.filter(b => b.id !== id); if (!current().blocks.length) current().blocks.push(block()); removePopovers(); persist(); render(); break; }
-    case 'block-up': case 'block-down': { const list = current().blocks; const i = list.findIndex(b => b.id === id); const j = i + (action === 'block-up' ? -1 : 1); if (j >= 0 && j < list.length) [list[i], list[j]] = [list[j], list[i]]; removePopovers(); persist(); render(); break; }
+    case 'block-type': { const b = current().blocks.find(b => b.id === id); remember(); if (ui.slash) { convertBlock(b, target.dataset.type, ''); break; } b.type = target.dataset.type; if (b.text === '/') b.text = ''; removePopovers(); persist(); render(); focusBlock(id); break; }
+    case 'block-duplicate': duplicateBlock(id); break;
+    case 'toggle-open': { const b = current().blocks.find(b => b.id === id); remember(); b.open = b.open === false; persist(); render(); $(`[data-block-id="${id}"] .toggle-arrow`)?.focus(); break; }
+    case 'block-delete': { remember(); current().blocks = current().blocks.filter(b => b.id !== id); if (!current().blocks.length) current().blocks.push(block()); removePopovers(); persist(); render(); break; }
+    case 'block-up': case 'block-down': { remember(); const list = current().blocks; const i = list.findIndex(b => b.id === id); const j = i + (action === 'block-up' ? -1 : 1); if (j >= 0 && j < list.length) [list[i], list[j]] = [list[j], list[i]]; removePopovers(); persist(); render(); break; }
     case 'move-page': { const page = state.pages.find(p => p.id === id) || current(); const excluded = descendants(state, page.id); showModal('move', '페이지 이동', `<form id="move-form" data-page-id="${esc(page.id)}"><label class="field-label">상위 페이지<select name="parent" aria-label="이동할 상위 페이지"><option value="">개인 페이지 (최상위)</option>${state.pages.filter(p => !p.deleted && !excluded.has(p.id)).map(p => `<option value="${esc(p.id)}" ${p.id === page.parentId ? 'selected' : ''}>${esc(pageName(p))}</option>`).join('')}</select></label><div class="form-footer"><span></span><button class="button primary">이동</button></div></form>`); break; }
     case 'workspace-menu': openWorkspaceMenu(target); break;
     case 'switch-workspace': activateWorkspace(target.dataset.workspace); break;
@@ -266,7 +313,7 @@ document.addEventListener('click', event => {
 document.addEventListener('input', event => {
   const el = event.target;
   if (el.id === 'page-title') { current().title = el.value; persist(); updateTitleUI(); }
-  if (el.dataset.editBlock) { const b = current().blocks.find(b => b.id === el.dataset.editBlock); b.text = el.value.slice(0, 100000); if (el.value !== b.text) el.value = b.text; persist(); el.style.height = 'auto'; el.style.height = `${el.scrollHeight}px`; if (el.value === '/') renderBlockMenu(b.id); else if (ui.blockMenu === b.id && !el.value.startsWith('/')) removePopovers(); }
+  if (el.dataset.editBlock) onBlockInput(el, event);
   if (el.getAttribute('aria-label') === '워크스페이스 검색') { ui.searchQuery = el.value; $('#search-results').innerHTML = searchResults(el.value); }
   if (el.getAttribute('aria-label') === '데이터베이스 검색') { ui.query = el.value; refreshDatabaseResults(); }
   if (el.dataset.taskField === 'assignee') { const task = state.tasks.find(t => t.id === el.dataset.id); if (task) { task.assignee = el.value.slice(0, 100); persist(); refreshDatabaseSummary(); } }
@@ -275,7 +322,7 @@ document.addEventListener('change', async event => {
   const el = event.target;
   if (el.getAttribute('aria-label') === '검색 범위') { ui.searchScope = el.value; $('#search-results').innerHTML = searchResults(ui.searchQuery); }
   if (el.getAttribute('aria-label') === '검색 정렬') { ui.searchSort = el.value; $('#search-results').innerHTML = searchResults(ui.searchQuery); }
-  if (el.dataset.check) { current().blocks.find(b => b.id === el.dataset.check).checked = el.checked; persist(); $(`[data-edit-block="${el.dataset.check}"]`).classList.toggle('checked', el.checked); }
+  if (el.dataset.check) { remember(); current().blocks.find(b => b.id === el.dataset.check).checked = el.checked; persist(); $(`[data-edit-block="${el.dataset.check}"]`).classList.toggle('checked', el.checked); }
   if (el.getAttribute('aria-label') === '상태 필터') { ui.status = el.value; saveDatabasePrefs(); renderDatabase(); }
   if (['status', 'priority', 'date'].includes(el.dataset.taskField)) {
     const task = state.tasks.find(t => t.id === el.dataset.id);
@@ -311,20 +358,97 @@ document.addEventListener('keydown', event => {
   const menu = event.target.closest('.popover');
   if (menu && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) { event.preventDefault(); const items = $$('button:not([disabled]),a[href]', menu); const i = items.indexOf(document.activeElement); const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (i + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length; items[next]?.focus(); return; }
 
+  if ((event.ctrlKey || event.metaKey) && !event.altKey && ['z', 'y'].includes(event.key.toLowerCase()) && !ui.modal && !event.target.matches('input,textarea,select') && current().type !== 'database') { event.preventDefault(); undoRedo(event.shiftKey || event.key.toLowerCase() === 'y'); return; }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); openSearch(); return; }
   if ((event.ctrlKey || event.metaKey) && event.altKey && event.key.toLowerCase() === 'n') { event.preventDefault(); addPage(); return; }
   if (event.key === 'Escape') { removePopovers(); if (ui.modal) closeModal(); if (ui.sidebar) { ui.sidebar = false; render(); } }
   if (ui.modal && event.key === 'Tab') { const controls = $$('button:not([disabled]), a[href], input:not([hidden]), select, textarea, [tabindex="0"]', $('.modal')).filter(el => el.getClientRects().length); const first = controls[0], last = controls.at(-1); if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); } else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); } }
-  const el = event.target;
-  if (el.dataset.editBlock && event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); removePopovers(); const index = current().blocks.findIndex(b => b.id === el.dataset.editBlock); const old = current().blocks[index]; const start = el.selectionStart; const b = block(['todo', 'bullet'].includes(old.type) ? old.type : 'text', el.value.slice(el.selectionEnd)); old.text = el.value.slice(0, start); current().blocks.splice(index + 1, 0, b); persist(); render(); focusBlock(b.id); }
-  if (el.dataset.editBlock && event.key === 'Backspace' && !el.value && current().blocks.length > 1) { event.preventDefault(); const list = current().blocks; const index = list.findIndex(b => b.id === el.dataset.editBlock); const focusId = list[index ? index - 1 : index + 1].id; list.splice(index, 1); persist(); render(); focusBlock(focusId); }
+  if (event.target.dataset?.editBlock) onBlockKeydown(event, event.target);
 });
+function onBlockInput(el, event) {
+  const page = current(); const b = page.blocks.find(b => b.id === el.dataset.editBlock); if (!b) return;
+  const text = readText(el);
+  history.typing(page, b.id);
+  b.text = text.slice(0, MAX_TEXT);
+  if (text.length > MAX_TEXT) setBlockContent(el, b, MAX_TEXT);
+  else if (!text && el.firstChild) el.replaceChildren();
+  persist();
+  if (event.isComposing) return;
+  if (applyShortcut(b, el, event)) return;
+  const slash = /^\/(\S{0,30})$/.exec(b.text);
+  if (b.text === '/') renderBlockMenu(b.id, { query: '', active: 0 });
+  else if (ui.blockMenu === b.id && ui.slash && slash) renderBlockMenu(b.id, { query: slash[1], active: 0 });
+  else if (ui.blockMenu === b.id && (ui.slash || !b.text.startsWith('/'))) removePopovers();
+}
+// Markdown shortcuts fire only for text typed one key at a time, so pasted text such as "# title" stays literal.
+function applyShortcut(b, el, event) {
+  if (b.type !== 'text' || event.inputType !== 'insertText' || !event.data || event.data.length !== 1) return false;
+  const pos = selectionOffsets(el); if (!pos || pos.start !== pos.end) return false;
+  const before = b.text.slice(0, pos.start); let type = null;
+  if (event.data === ' ' && before.endsWith(' ')) type = markdownShortcut(before.slice(0, -1));
+  else if (event.data === '`' && before === '```') type = 'code';
+  else if (event.data === '-' && b.text === '---') type = 'divider';
+  if (!type) return false;
+  remember(); convertBlock(b, type, type === 'divider' ? '' : b.text.slice(pos.start));
+  return true;
+}
+function onBlockKeydown(event, el) {
+  if (event.isComposing) return;
+  const page = current(); const list = page.blocks; const index = list.findIndex(b => b.id === el.dataset.editBlock); const b = list[index]; if (!b) return;
+  const mod = event.ctrlKey || event.metaKey; const key = event.key;
+  const pos = selectionOffsets(el) || { start: b.text.length, end: b.text.length };
+  if (ui.slash && ui.blockMenu === b.id && ['ArrowDown', 'ArrowUp', 'Enter'].includes(key)) {
+    event.preventDefault();
+    if (key === 'Enter') { $('.block-menu [aria-selected="true"]')?.click(); return; }
+    const count = slashMatches(typeOptions, ui.slash.query).length;
+    renderBlockMenu(b.id, { query: ui.slash.query, active: (ui.slash.active + (key === 'ArrowDown' ? 1 : -1) + count) % count });
+    return;
+  }
+  if (key === 'Enter' && (event.shiftKey || (b.type === 'code' && !mod))) { event.preventDefault(); insertIntoBlock(el, b, pos, '\n'); return; }
+  if (key === 'Enter') {
+    event.preventDefault(); removePopovers();
+    if (list.length >= 10000) { toast('블록은 페이지당 최대 10,000개까지 만들 수 있습니다.', true); return; }
+    remember();
+    if (!b.text && listTypes.includes(b.type)) { if (indentOf(b)) b.indent = indentOf(b) - 1; else b.type = 'text'; persist(); render(); focusBlock(b.id); return; }
+    const open = b.type === 'toggle' && b.open !== false;
+    const next = block(['todo', 'bullet', 'numbered'].includes(b.type) || (b.type === 'toggle' && !open) ? b.type : 'text', b.type === 'code' ? '' : b.text.slice(pos.end));
+    const depth = Math.min(6, indentOf(b) + (open ? 1 : 0)); if (depth) next.indent = depth;
+    if (b.type !== 'code') b.text = b.text.slice(0, pos.start);
+    list.splice(b.type === 'toggle' && !open ? subtreeEnd(list, index) : index + 1, 0, next);
+    persist(); render(); focusBlock(next.id, 0); return;
+  }
+  if (key === 'Backspace' && pos.start === 0 && pos.end === 0 && !mod) {
+    if (b.type !== 'text') { event.preventDefault(); remember(); b.type = 'text'; persist(); render(); focusBlock(b.id, 0); return; }
+    if (indentOf(b)) { event.preventDefault(); remember(); shiftIndent(list, index, -1); persist(); render(); focusBlock(b.id, 0); return; }
+    if (!b.text) {
+      if (list.length < 2) return;
+      event.preventDefault(); remember(); const focusId = list[index ? index - 1 : index + 1].id; list.splice(index, 1); persist(); render(); focusBlock(focusId); return;
+    }
+    if (!index) return;
+    event.preventDefault(); remember(); const previous = list[index - 1];
+    if (staticTypes.includes(previous.type)) { list.splice(index - 1, 1); persist(); render(); focusBlock(b.id, 0); return; }
+    const target = visibleNeighbor(index, -1) || previous; const joint = target.text.length;
+    target.text = (target.text + b.text).slice(0, MAX_TEXT); list.splice(index, 1); persist(); render(); focusBlock(target.id, joint); return;
+  }
+  if (key === 'Tab' && !mod && !event.altKey) {
+    event.preventDefault();
+    if (b.type === 'code') { if (!event.shiftKey) insertIntoBlock(el, b, pos, '  '); return; }
+    const before = JSON.stringify(list);
+    if (shiftIndent(list, index, event.shiftKey ? -1 : 1)) { history.snapshot({ id: page.id, blocks: JSON.parse(before) }); persist(); render(); focusBlock(b.id, pos.start); }
+    return;
+  }
+  if ((key === 'ArrowUp' || key === 'ArrowDown') && !event.shiftKey && !mod && !event.altKey && caretOnEdge(el, key === 'ArrowUp' ? -1 : 1)) {
+    const target = visibleNeighbor(index, key === 'ArrowUp' ? -1 : 1);
+    if (target) { event.preventDefault(); removePopovers(); focusBlock(target.id, Math.min(pos.start, target.text.length)); }
+    return;
+  }
+  if (mod && !event.shiftKey && !event.altKey && key.toLowerCase() === 'd') { event.preventDefault(); duplicateBlock(b.id); }
+}
 document.addEventListener('dragstart', event => { const task = event.target.closest('[data-drag-task]'); const b = event.target.closest('[data-drag-block]'); if (task) { ui.draggedTask = task.dataset.dragTask; event.dataTransfer.setData('text/plain', ui.draggedTask); } if (b) { ui.draggedBlock = b.dataset.dragBlock; event.dataTransfer.setData('text/plain', ui.draggedBlock); } });
 document.addEventListener('dragover', event => { if (event.target.closest('[data-drop-status]') || (ui.draggedBlock && event.target.closest('[data-block-id]'))) event.preventDefault(); });
-document.addEventListener('drop', event => { const column = event.target.closest('[data-drop-status]'); const targetBlock = event.target.closest('[data-block-id]'); if (column && ui.draggedTask) { event.preventDefault(); const t = state.tasks.find(t => t.id === ui.draggedTask); if (t) { t.status = column.dataset.dropStatus; persist(); renderDatabase(); } } if (targetBlock && ui.draggedBlock) { event.preventDefault(); const list = current().blocks; const from = list.findIndex(b => b.id === ui.draggedBlock); const to = list.findIndex(b => b.id === targetBlock.dataset.blockId); if (from >= 0 && to >= 0) { const [item] = list.splice(from, 1); list.splice(to, 0, item); persist(); render(); } } ui.draggedTask = null; ui.draggedBlock = null; });
+document.addEventListener('drop', event => { const column = event.target.closest('[data-drop-status]'); const targetBlock = event.target.closest('[data-block-id]'); if (column && ui.draggedTask) { event.preventDefault(); const t = state.tasks.find(t => t.id === ui.draggedTask); if (t) { t.status = column.dataset.dropStatus; persist(); renderDatabase(); } } if (targetBlock && ui.draggedBlock) { event.preventDefault(); const list = current().blocks; const from = list.findIndex(b => b.id === ui.draggedBlock); const to = list.findIndex(b => b.id === targetBlock.dataset.blockId); if (from >= 0 && to >= 0) { remember(); const [item] = list.splice(from, 1); list.splice(to, 0, item); persist(); render(); } } ui.draggedTask = null; ui.draggedBlock = null; });
 document.addEventListener('dragend', () => { ui.draggedTask = null; ui.draggedBlock = null; });
 window.addEventListener('storage', event => { if (event.key === STORAGE_KEY || event.key === null) { persistenceBlocked = true; if ($('#save-state')) $('#save-state').innerHTML = '<span class="save-error">다른 탭 변경 · 새로고침 필요</span>'; toast('다른 탭의 최신 변경을 보호하기 위해 자동 저장을 멈췄습니다. 현재 편집 내용은 백업한 뒤 새로고침하세요.', true); } });
-window.addEventListener('resize', resizeBlocks);
 document.addEventListener('contextmenu', event => {
   const row = event.target.closest('[data-sidebar-page]');
   if (!row) return;
