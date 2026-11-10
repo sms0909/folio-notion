@@ -4,6 +4,9 @@ export const MAX_INDENT = 6;
 export const MAX_TEXT = 100000;
 export const listTypes = ['bullet', 'numbered', 'todo', 'toggle'];
 export const staticTypes = ['divider', 'toc', 'page'];
+// Zero-width placeholder the editor puts at the caret to carry pending formatting; never part of the text.
+export const HOLD = '​';
+const visible = data => data.replaceAll(HOLD, '');
 const shortcuts = [[/^#$/, 'h1'], [/^##$/, 'h2'], [/^###$/, 'h3'], [/^[-*]$/, 'bullet'], [/^\d{1,9}\.$/, 'numbered'], [/^\[\]$/, 'todo'], [/^>$/, 'quote']];
 export const markdownShortcut = prefix => shortcuts.find(([pattern]) => pattern.test(prefix))?.[1] || null;
 export const indentOf = b => Math.min(MAX_INDENT, Math.max(0, Number.isInteger(b.indent) ? b.indent : 0));
@@ -46,22 +49,26 @@ export function slashMatches(options, query) {
 export function readText(el) {
   let text = ''; const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
   while (walker.nextNode()) text += walker.currentNode.data;
-  return text;
+  return visible(text);
 }
 export function selectionOffsets(el) {
   const selection = getSelection(); if (!selection.rangeCount) return null;
   const range = selection.getRangeAt(0);
   if (!el.contains(range.startContainer) || !el.contains(range.endContainer)) return null;
-  const measure = (node, offset) => { const r = document.createRange(); r.selectNodeContents(el); r.setEnd(node, offset); return r.toString().length; };
+  const measure = (node, offset) => { const r = document.createRange(); r.selectNodeContents(el); r.setEnd(node, offset); return visible(r.toString()).length; };
   return { start: measure(range.startContainer, range.startOffset), end: measure(range.endContainer, range.endOffset) };
 }
 function locate(el, offset) {
-  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT); let node; let last = null;
-  while ((node = walker.nextNode())) {
-    if (offset <= node.data.length) return [node, offset];
-    offset -= node.data.length; last = node;
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT); const nodes = []; let node;
+  while ((node = walker.nextNode())) nodes.push(node);
+  let seen = 0;
+  for (const n of nodes) { if (seen === offset && n.data.startsWith(HOLD)) return [n, 1]; seen += visible(n.data).length; if (seen > offset) break; }
+  for (const n of nodes) {
+    const length = visible(n.data).length;
+    if (offset <= length) { let raw = 0; for (let count = 0; count < offset; raw++) if (n.data[raw] !== HOLD) count++; return [n, raw]; }
+    offset -= length;
   }
-  return last ? [last, last.data.length] : [el, 0];
+  return nodes.length ? [nodes.at(-1), nodes.at(-1).data.length] : [el, 0];
 }
 export function setSelection(el, start, end = start) {
   const range = document.createRange();

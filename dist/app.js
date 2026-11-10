@@ -2,8 +2,9 @@ import { sidebarHTML, sidebarSettings } from './sidebar-view.js';
 import { listWorkspaces, switchLocalWorkspace, workspaceId } from './workspaces.js';
 import { databaseHTML as renderDatabaseHTML, databaseResults, filteredTasks } from './database-view.js';
 import { icon } from './icons.js';
-import { MAX_TEXT, listTypes, staticTypes, markdownShortcut, indentOf, numbering, hiddenBlocks, subtreeEnd, shiftIndent, slashMatches, readText, selectionOffsets, setSelection, caretOnEdge } from './blocks.js';
+import { HOLD, MAX_TEXT, listTypes, staticTypes, markdownShortcut, indentOf, numbering, hiddenBlocks, subtreeEnd, shiftIndent, slashMatches, readText, selectionOffsets, setSelection, caretOnEdge } from './blocks.js';
 import * as history from './history.js';
+import { colors, safeHref, normalizeMarks, toggleMark, covers, marksAt, marksIn, sliceMarks, shiftMarks, spliceMarks, renderInline, readInline, nodeMarks, inlineShortcut } from './richtext.js';
 import { block, uid, statuses, priorities, blockTypes, loadWorkspace, initialWorkspace, saveWorkspace, STORAGE_KEY, createPage, duplicatePage, trashPage, restorePage, descendants, movePage, validateWorkspace, pageMarkdown } from './store.js';
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -48,7 +49,7 @@ function breadcrumb(page) {
 }
 const placeholders = { h1: '제목 1', h2: '제목 2', h3: '제목 3', code: '코드를 입력하세요', toggle: '토글' };
 // A trailing line break needs a <br> so the browser gives the last empty line a box.
-const inlineHTML = b => `${esc(b.text)}${b.text.endsWith('\n') ? '<br>' : ''}`;
+const inlineHTML = (b, hold = null) => `${renderInline(b.text, b.type === 'code' ? [] : b.marks, esc, hold)}${b.text.endsWith('\n') ? '<br>' : ''}`;
 function blockHTML(b, i, context) {
   const num = i + 1; const open = b.open !== false;
   return `<div class="block-row block-${b.type}" data-testid="block-${num}" data-type="${b.type}" data-block-id="${esc(b.id)}" data-indent="${indentOf(b)}" style="--indent:${indentOf(b)}" ${context.hidden.has(b.id) ? 'hidden' : ''} draggable="false">
@@ -138,7 +139,7 @@ function activateWorkspace(id, name = null) {
   if (!persist(false)) { toast('현재 공간을 저장하지 못해 전환하지 않았습니다. 먼저 백업해 주세요.', true); return; }
   try {
     const next = switchLocalWorkspace(state, id, name);
-    state = next; lastSavedRaw = localStorage.getItem(STORAGE_KEY); persistenceBlocked = false; persist.warned = false;
+    state = next; history.clearHistory(); lastSavedRaw = localStorage.getItem(STORAGE_KEY); persistenceBlocked = false; persist.warned = false;
     const prefs = sidebarSettings(state); ui.sidebarPrefs = prefs; ui.expanded = new Set(prefs.expanded); ui.collapsed = prefs.collapsed; ui.sidebar = false;
     applyDatabasePrefs();
     closeModal(false); removePopovers(); render(); toast('워크스페이스를 전환했습니다.');
@@ -211,15 +212,21 @@ function download(name, content, type) { const url = URL.createObjectURL(new Blo
 const editable = id => $(`[data-edit-block="${id}"]`);
 function focusBlock(id, offset = null) { const el = editable(id); if (el) { el.focus(); setSelection(el, offset ?? readText(el).length); } else $(`[data-block-id="${id}"] [data-action="block-menu"]`)?.focus(); }
 const remember = () => history.snapshot(current());
+const marksOf = b => b.marks || [];
+// Code blocks stay plain; every other block keeps only marks that still fit its text.
+function setMarks(b, marks) { const next = b.type === 'code' ? [] : normalizeMarks(marks, b.text.length); if (next.length) b.marks = next; else delete b.marks; }
 function setBlockContent(el, b, caret = null) { el.innerHTML = inlineHTML(b); if (caret !== null) setSelection(el, caret); }
 function insertIntoBlock(el, b, pos, text) {
   history.typing(current(), b.id);
-  b.text = (b.text.slice(0, pos.start) + text + b.text.slice(pos.end)).slice(0, MAX_TEXT);
+  const marks = spliceMarks(marksOf(b), pos.start, pos.end - pos.start, text.length);
+  b.text = (b.text.slice(0, pos.start) + text + b.text.slice(pos.end)).slice(0, MAX_TEXT); setMarks(b, marks);
   setBlockContent(el, b, Math.min(pos.start + text.length, b.text.length)); persist();
 }
-// Converts a block to another type from the slash menu or a Markdown shortcut.
-function convertBlock(b, type, text) {
-  const list = current().blocks; b.type = type; b.text = text; removePopovers();
+// Converts a block to another type from the slash menu or a Markdown shortcut,
+// keeping the text from offset `from` on (nothing when `from` is null).
+function convertBlock(b, type, from = null) {
+  const list = current().blocks; const marks = from === null ? [] : sliceMarks(marksOf(b), from, b.text.length);
+  b.type = type; b.text = from === null ? '' : b.text.slice(from); setMarks(b, marks); removePopovers();
   if (type !== 'divider') { persist(); render(); focusBlock(b.id, 0); return; }
   const index = list.indexOf(b); let next = list[index + 1];
   if (!next || staticTypes.includes(next.type)) { next = block(); list.splice(index + 1, 0, next); }
@@ -244,6 +251,8 @@ function undoRedo(redo) {
 }
 
 document.addEventListener('click', event => {
+  const link = event.target.closest('.block-input a[href]');
+  if (link) { event.preventDefault(); if (getSelection().isCollapsed && safeHref(link.getAttribute('href'))) window.open(link.href, '_blank', 'noopener'); }
   const target = event.target.closest('[data-action]');
   if (!target) { if (!event.target.closest('.popover')) removePopovers(); if (event.target.dataset.backdrop) closeModal(); return; }
   const { action, id } = target.dataset;
@@ -281,13 +290,17 @@ document.addEventListener('click', event => {
     case 'export-page': download(`${pageName(state.pages.find(p => p.id === id) || current())}.md`, pageMarkdown(state.pages.find(p => p.id === id) || current()), 'text/markdown;charset=utf-8'); toast('페이지를 Markdown으로 내보냈습니다.'); break;
     case 'export-workspace': download('folio-workspace-backup.json', JSON.stringify(state, null, 2), 'application/json'); toast('백업 파일을 내보냈습니다.'); break;
     case 'import-workspace': $('#import-file').click(); break;
-    case 'confirm-import': if (ui.pendingImport) { state = { ...ui.pendingImport, workspaceId: workspaceId(state) }; applyDatabasePrefs(); ui.sidebarPrefs = sidebarSettings(state); ui.expanded = new Set(ui.sidebarPrefs.expanded); ui.collapsed = ui.sidebarPrefs.collapsed; persistenceBlocked = false; lastSavedRaw = localStorage.getItem(STORAGE_KEY); persist.warned = false; persist(); closeModal(false); render(); toast('백업을 가져왔습니다.'); } break;
+    case 'confirm-import': if (ui.pendingImport) { state = { ...ui.pendingImport, workspaceId: workspaceId(state) }; history.clearHistory(); applyDatabasePrefs(); ui.sidebarPrefs = sidebarSettings(state); ui.expanded = new Set(ui.sidebarPrefs.expanded); ui.collapsed = ui.sidebarPrefs.collapsed; persistenceBlocked = false; lastSavedRaw = localStorage.getItem(STORAGE_KEY); persist.warned = false; persist(); closeModal(false); render(); toast('백업을 가져왔습니다.'); } break;
     case 'cancel-import': ui.pendingImport = null; $('#import-feedback').innerHTML = ''; break;
     case 'append-block': { remember(); const b = block(); current().blocks.push(b); persist(); render(); focusBlock(b.id); break; }
     case 'add-block': { remember(); const list = current().blocks; const index = list.findIndex(b => b.id === id); const b = block(); if (indentOf(list[index])) b.indent = indentOf(list[index]); list.splice(subtreeEnd(list, index), 0, b); persist(); render(); focusBlock(b.id); break; }
     case 'block-menu': renderBlockMenu(id); break;
-    case 'block-type': { const b = current().blocks.find(b => b.id === id); remember(); if (ui.slash) { convertBlock(b, target.dataset.type, ''); break; } b.type = target.dataset.type; if (b.text === '/') b.text = ''; removePopovers(); persist(); render(); focusBlock(id); break; }
+    case 'block-type': { const b = current().blocks.find(b => b.id === id); remember(); if (ui.slash) { convertBlock(b, target.dataset.type); break; } b.type = target.dataset.type; if (b.text === '/') b.text = ''; setMarks(b, marksOf(b)); removePopovers(); persist(); render(); focusBlock(id); break; }
     case 'block-duplicate': duplicateBlock(id); break;
+    case 'format': applyMark(target.dataset.type); break;
+    case 'format-panel': ui.format.panel = ui.format.panel === target.dataset.panel ? null : target.dataset.panel; renderFormatBar(); if (ui.format.panel === 'link') $('#format-bar input').focus(); break;
+    case 'format-color': applyMark(target.dataset.kind, target.dataset.value || null, ui.format); break;
+    case 'format-unlink': applyMark('link', null, ui.format); break;
     case 'toggle-open': { const b = current().blocks.find(b => b.id === id); remember(); b.open = b.open === false; persist(); render(); $(`[data-block-id="${id}"] .toggle-arrow`)?.focus(); break; }
     case 'block-delete': { remember(); current().blocks = current().blocks.filter(b => b.id !== id); if (!current().blocks.length) current().blocks.push(block()); removePopovers(); persist(); render(); break; }
     case 'block-up': case 'block-down': { remember(); const list = current().blocks; const i = list.findIndex(b => b.id === id); const j = i + (action === 'block-up' ? -1 : 1); if (j >= 0 && j < list.length) [list[i], list[j]] = [list[j], list[i]]; removePopovers(); persist(); render(); break; }
@@ -350,6 +363,7 @@ document.addEventListener('submit', event => {
   if (form.id === 'settings-form') { const name = String(data.get('name')).trim(); if (!name) return; state.settings.name = name; state.settings.theme = data.get('theme'); persist(); closeModal(false); render(); toast('설정을 저장했습니다.'); }
   if (form.id === 'move-form') { try { const parent = data.get('parent') || null; movePage(state, form.dataset.pageId, parent); if (parent) ui.expanded.add(parent); saveSidebar(); closeModal(false); render(); toast('페이지를 이동했습니다.'); } catch (error) { toast(error.message, true); } }
   if (form.id === 'rename-form') { const page = state.pages.find(p => p.id === form.dataset.pageId); page.title = String(data.get('title')).trim().slice(0, 500) || '제목 없음'; page.updatedAt = new Date().toISOString(); persist(false); closeModal(false); render(); }
+  if (form.id === 'link-form') { const href = safeHref(data.get('href')); if (!href) { toast('http, https, mailto 주소만 연결할 수 있습니다.', true); return; } applyMark('link', href, ui.format); }
   if (form.id === 'workspace-form') activateWorkspace(null, String(data.get('name')));
 });
 document.addEventListener('keydown', event => {
@@ -359,22 +373,32 @@ document.addEventListener('keydown', event => {
   if (menu && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) { event.preventDefault(); const items = $$('button:not([disabled]),a[href]', menu); const i = items.indexOf(document.activeElement); const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (i + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length; items[next]?.focus(); return; }
 
   if ((event.ctrlKey || event.metaKey) && !event.altKey && ['z', 'y'].includes(event.key.toLowerCase()) && !ui.modal && !event.target.matches('input,textarea,select') && current().type !== 'database') { event.preventDefault(); undoRedo(event.shiftKey || event.key.toLowerCase() === 'y'); return; }
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); openSearch(); return; }
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); if (!openLinkEditor()) openSearch(); return; }
   if ((event.ctrlKey || event.metaKey) && event.altKey && event.key.toLowerCase() === 'n') { event.preventDefault(); addPage(); return; }
-  if (event.key === 'Escape') { removePopovers(); if (ui.modal) closeModal(); if (ui.sidebar) { ui.sidebar = false; render(); } }
+  if (event.key === 'Escape') { closeFormatBar(true); removePopovers(); if (ui.modal) closeModal(); if (ui.sidebar) { ui.sidebar = false; render(); } }
   if (ui.modal && event.key === 'Tab') { const controls = $$('button:not([disabled]), a[href], input:not([hidden]), select, textarea, [tabindex="0"]', $('.modal')).filter(el => el.getClientRects().length); const first = controls[0], last = controls.at(-1); if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); } else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); } }
   if (event.target.dataset?.editBlock) onBlockKeydown(event, event.target);
 });
+// The invisible caret holder has done its job once real text sits next to it.
+function dropUsedHold(el) {
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT); const used = [];
+  while (walker.nextNode()) if (walker.currentNode.data.includes(HOLD) && walker.currentNode.data.length > 1) used.push(walker.currentNode);
+  if (!used.length) return;
+  const pos = selectionOffsets(el);
+  for (const node of used) node.data = node.data.replaceAll(HOLD, '');
+  if (pos) setSelection(el, pos.start, pos.end);
+}
 function onBlockInput(el, event) {
   const page = current(); const b = page.blocks.find(b => b.id === el.dataset.editBlock); if (!b) return;
-  const text = readText(el);
+  const { text, marks } = readInline(el);
   history.typing(page, b.id);
-  b.text = text.slice(0, MAX_TEXT);
+  b.text = text.slice(0, MAX_TEXT); setMarks(b, marks);
   if (text.length > MAX_TEXT) setBlockContent(el, b, MAX_TEXT);
   else if (!text && el.firstChild) el.replaceChildren();
   persist();
   if (event.isComposing) return;
-  if (applyShortcut(b, el, event)) return;
+  dropUsedHold(el);
+  if (applyShortcut(b, el, event) || applyInlineShortcut(b, el, event)) return;
   const slash = /^\/(\S{0,30})$/.exec(b.text);
   if (b.text === '/') renderBlockMenu(b.id, { query: '', active: 0 });
   else if (ui.blockMenu === b.id && ui.slash && slash) renderBlockMenu(b.id, { query: slash[1], active: 0 });
@@ -389,9 +413,100 @@ function applyShortcut(b, el, event) {
   else if (event.data === '`' && before === '```') type = 'code';
   else if (event.data === '-' && b.text === '---') type = 'divider';
   if (!type) return false;
-  remember(); convertBlock(b, type, type === 'divider' ? '' : b.text.slice(pos.start));
+  remember(); convertBlock(b, type, type === 'divider' ? null : pos.start);
   return true;
 }
+// Inline Markdown such as **bold** converts as soon as its closing mark is typed.
+function applyInlineShortcut(b, el, event) {
+  if (b.type === 'code' || event.inputType !== 'insertText' || !event.data || !'*`~'.includes(event.data)) return false;
+  const pos = selectionOffsets(el); if (!pos || pos.start !== pos.end) return false;
+  const result = inlineShortcut(b.text, marksOf(b), pos.start); if (!result) return false;
+  b.text = result.text; setMarks(b, result.marks);
+  // Typing continues unformatted after the converted run.
+  el.innerHTML = inlineHTML(b, { offset: result.caret, marks: marksAt(result.marks, result.caret).filter(m => m.type !== result.type) });
+  setSelection(el, result.caret); persist();
+  return true;
+}
+// Toggles formatting on the selection (`range` when the selection has moved into the toolbar).
+// With only a caret, it changes the formatting of what is typed next.
+function applyMark(type, value = null, range = null) {
+  const id = range?.id || document.activeElement?.dataset?.editBlock; const el = id && editable(id);
+  const b = el && current().blocks.find(b => b.id === id); if (!b || b.type === 'code') return;
+  const pos = range || selectionOffsets(el); if (!pos) return;
+  if (pos.start === pos.end) {
+    if (['link', 'color', 'bg'].includes(type)) return;
+    const active = nodeMarks(getSelection().anchorNode, el);
+    el.innerHTML = inlineHTML(b, { offset: pos.start, marks: active.some(m => m.type === type) ? active.filter(m => m.type !== type) : [...active, { type }] });
+    setSelection(el, pos.start); return;
+  }
+  remember(); setMarks(b, toggleMark(marksOf(b), pos.start, pos.end, type, value)); persist();
+  setBlockContent(el, b); el.focus(); setSelection(el, pos.start, pos.end);
+  if (ui.format && type === 'link') ui.format.panel = null;
+  showFormatBar();
+}
+const formatButtons = [['bold', '굵게', 'B'], ['italic', '기울임', 'I'], ['underline', '밑줄', 'U'], ['strike', '취소선', 'S'], ['code', '인라인 코드', '&lt;/&gt;']];
+function renderFormatBar() {
+  const f = ui.format; const bar = $('#format-bar'); const b = f && current().blocks.find(b => b.id === f.id); if (!b || !bar) return;
+  const marks = marksOf(b); const inRange = type => marksIn(marks, f.start, f.end).find(m => m.type === type);
+  const swatches = (kind, label) => `<div class="swatch-row" role="group" aria-label="${label}"><span>${label}</span><button type="button" class="swatch" data-action="format-color" data-kind="${kind}" data-value="" aria-label="${label} 기본" aria-pressed="${!inRange(kind)}">가</button>${colors.map(([name, title]) => `<button type="button" class="swatch" data-action="format-color" data-kind="${kind}" data-value="${name}" aria-label="${label} ${title}" aria-pressed="${inRange(kind)?.value === name}"><span data-${kind}="${name}">가</span></button>`).join('')}</div>`;
+  bar.innerHTML = `<div class="format-buttons">${formatButtons.map(([type, label, glyph]) => `<button type="button" class="format-${type}" data-action="format" data-type="${type}" aria-label="${label}" aria-pressed="${covers(marks, f.start, f.end, type)}">${glyph}</button>`).join('')}<button type="button" data-action="format-panel" data-panel="link" aria-label="링크" aria-pressed="${!!inRange('link')}" aria-expanded="${f.panel === 'link'}">${icon('external')}</button><button type="button" class="format-color" data-action="format-panel" data-panel="color" aria-label="색상" aria-expanded="${f.panel === 'color'}">A</button></div>
+    ${f.panel === 'link' ? `<form id="link-form"><input name="href" aria-label="링크 주소" placeholder="https://example.com" maxlength="2000" value="${esc(inRange('link')?.value || '')}"><button class="button primary small">적용</button>${inRange('link') ? '<button type="button" class="button small" data-action="format-unlink">링크 제거</button>' : ''}</form>` : ''}${f.panel === 'color' ? `<div class="format-colors">${swatches('color', '글자색')}${swatches('bg', '배경색')}</div>` : ''}`;
+}
+// Shows the formatting toolbar above the current text selection, or hides it when there is none.
+function showFormatBar() {
+  let bar = $('#format-bar');
+  if (bar?.contains(document.activeElement)) return;
+  const el = document.activeElement?.dataset?.editBlock ? document.activeElement : null;
+  const pos = el && selectionOffsets(el); const b = el && current().blocks.find(b => b.id === el.dataset.editBlock);
+  if (!pos || pos.start === pos.end || !b || b.type === 'code' || ui.modal) { closeFormatBar(); return; }
+  const same = ui.format && ui.format.id === b.id && ui.format.start === pos.start && ui.format.end === pos.end;
+  ui.format = { id: b.id, start: pos.start, end: pos.end, panel: same ? ui.format.panel : null };
+  if (!bar) { bar = document.createElement('div'); bar.id = 'format-bar'; bar.className = 'format-bar'; bar.setAttribute('role', 'toolbar'); bar.setAttribute('aria-label', '텍스트 서식'); document.body.append(bar); }
+  renderFormatBar();
+  const rect = getSelection().getRangeAt(0).getBoundingClientRect(); const above = rect.top - bar.offsetHeight - 8;
+  bar.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - bar.offsetWidth - 8))}px`;
+  bar.style.top = `${above < 8 ? rect.bottom + 8 : above}px`;
+}
+function closeFormatBar(restore = false) {
+  const bar = $('#format-bar'); if (!bar) return;
+  const inside = bar.contains(document.activeElement); const f = ui.format;
+  bar.remove(); ui.format = null;
+  if (restore && inside && f && editable(f.id)) focusBlock(f.id, f.end);
+}
+function openLinkEditor() {
+  const el = document.activeElement?.dataset?.editBlock ? document.activeElement : null; const pos = el && selectionOffsets(el);
+  if (!pos || pos.start === pos.end) return false;
+  showFormatBar(); if (!ui.format) return false;
+  ui.format.panel = 'link'; renderFormatBar(); $('#format-bar input').focus(); return true;
+}
+// Pasting keeps plain text only; several lines become several blocks.
+function pasteText(el, text) {
+  const list = current().blocks; const index = list.findIndex(b => b.id === el.dataset.editBlock); const b = list[index]; if (!b) return;
+  const pos = selectionOffsets(el) || { start: b.text.length, end: b.text.length };
+  const lines = text.split('\n'); removePopovers();
+  if (b.type === 'code' || lines.length === 1) { insertIntoBlock(el, b, pos, text); return; }
+  remember();
+  const marks = marksOf(b); const tail = { text: b.text.slice(pos.end), marks: sliceMarks(marks, pos.end, b.text.length) };
+  b.text = (b.text.slice(0, pos.start) + lines[0]).slice(0, MAX_TEXT); setMarks(b, sliceMarks(marks, 0, pos.start));
+  const room = Math.max(0, 10000 - list.length); const rest = lines.slice(1).filter(line => line.trim());
+  if (rest.length > room) toast('블록은 페이지당 최대 10,000개까지 만들 수 있습니다.', true);
+  const type = ['bullet', 'numbered', 'todo'].includes(b.type) ? b.type : 'text';
+  const added = rest.slice(0, room).map(line => { const next = block(type, line.slice(0, MAX_TEXT)); if (indentOf(b)) next.indent = indentOf(b); return next; });
+  list.splice(index + 1, 0, ...added);
+  const last = added.at(-1) || b; const joint = last.text.length;
+  const merged = [...marksOf(last), ...shiftMarks(tail.marks, joint)]; last.text = (last.text + tail.text).slice(0, MAX_TEXT); setMarks(last, merged);
+  persist(); render(); focusBlock(last.id, joint);
+}
+document.addEventListener('paste', event => {
+  const el = (event.target.closest ? event.target : event.target.parentElement)?.closest('[data-edit-block]'); if (!el) return;
+  event.preventDefault();
+  const text = (event.clipboardData?.getData('text/plain') || '').replace(/\r\n?/g, '\n'); if (text) pasteText(el, text);
+});
+// Browser-native formatting commands would write markup this editor does not track.
+document.addEventListener('beforeinput', event => { if (event.target.dataset?.editBlock && event.inputType.startsWith('format')) event.preventDefault(); });
+// Keep the text selection while the toolbar buttons are pressed.
+document.addEventListener('mousedown', event => { if (event.target.closest?.('#format-bar') && !event.target.closest('input')) event.preventDefault(); });
+document.addEventListener('selectionchange', showFormatBar);
 function onBlockKeydown(event, el) {
   if (event.isComposing) return;
   const page = current(); const list = page.blocks; const index = list.findIndex(b => b.id === el.dataset.editBlock); const b = list[index]; if (!b) return;
@@ -404,6 +519,8 @@ function onBlockKeydown(event, el) {
     renderBlockMenu(b.id, { query: ui.slash.query, active: (ui.slash.active + (key === 'ArrowDown' ? 1 : -1) + count) % count });
     return;
   }
+  const format = mod && !event.altKey && ({ b: 'bold', i: 'italic', u: 'underline', e: 'code' }[event.shiftKey ? '' : key.toLowerCase()] || (event.shiftKey && key.toLowerCase() === 's' ? 'strike' : null));
+  if (format) { event.preventDefault(); applyMark(format); return; }
   if (key === 'Enter' && (event.shiftKey || (b.type === 'code' && !mod))) { event.preventDefault(); insertIntoBlock(el, b, pos, '\n'); return; }
   if (key === 'Enter') {
     event.preventDefault(); removePopovers();
@@ -411,14 +528,14 @@ function onBlockKeydown(event, el) {
     remember();
     if (!b.text && listTypes.includes(b.type)) { if (indentOf(b)) b.indent = indentOf(b) - 1; else b.type = 'text'; persist(); render(); focusBlock(b.id); return; }
     const open = b.type === 'toggle' && b.open !== false;
-    const next = block(['todo', 'bullet', 'numbered'].includes(b.type) || (b.type === 'toggle' && !open) ? b.type : 'text', b.type === 'code' ? '' : b.text.slice(pos.end));
+    const next = block(['todo', 'bullet', 'numbered'].includes(b.type) || (b.type === 'toggle' && !open) ? b.type : 'text');
+    if (b.type !== 'code') { const marks = marksOf(b); next.text = b.text.slice(pos.end); setMarks(next, sliceMarks(marks, pos.end, b.text.length)); b.text = b.text.slice(0, pos.start); setMarks(b, sliceMarks(marks, 0, pos.start)); }
     const depth = Math.min(6, indentOf(b) + (open ? 1 : 0)); if (depth) next.indent = depth;
-    if (b.type !== 'code') b.text = b.text.slice(0, pos.start);
     list.splice(b.type === 'toggle' && !open ? subtreeEnd(list, index) : index + 1, 0, next);
     persist(); render(); focusBlock(next.id, 0); return;
   }
   if (key === 'Backspace' && pos.start === 0 && pos.end === 0 && !mod) {
-    if (b.type !== 'text') { event.preventDefault(); remember(); b.type = 'text'; persist(); render(); focusBlock(b.id, 0); return; }
+    if (b.type !== 'text') { event.preventDefault(); remember(); b.type = 'text'; setMarks(b, marksOf(b)); persist(); render(); focusBlock(b.id, 0); return; }
     if (indentOf(b)) { event.preventDefault(); remember(); shiftIndent(list, index, -1); persist(); render(); focusBlock(b.id, 0); return; }
     if (!b.text) {
       if (list.length < 2) return;
@@ -428,7 +545,8 @@ function onBlockKeydown(event, el) {
     event.preventDefault(); remember(); const previous = list[index - 1];
     if (staticTypes.includes(previous.type)) { list.splice(index - 1, 1); persist(); render(); focusBlock(b.id, 0); return; }
     const target = visibleNeighbor(index, -1) || previous; const joint = target.text.length;
-    target.text = (target.text + b.text).slice(0, MAX_TEXT); list.splice(index, 1); persist(); render(); focusBlock(target.id, joint); return;
+    const merged = [...marksOf(target), ...shiftMarks(marksOf(b), joint)];
+    target.text = (target.text + b.text).slice(0, MAX_TEXT); setMarks(target, merged); list.splice(index, 1); persist(); render(); focusBlock(target.id, joint); return;
   }
   if (key === 'Tab' && !mod && !event.altKey) {
     event.preventDefault();
@@ -445,8 +563,8 @@ function onBlockKeydown(event, el) {
   if (mod && !event.shiftKey && !event.altKey && key.toLowerCase() === 'd') { event.preventDefault(); duplicateBlock(b.id); }
 }
 document.addEventListener('dragstart', event => { const task = event.target.closest('[data-drag-task]'); const b = event.target.closest('[data-drag-block]'); if (task) { ui.draggedTask = task.dataset.dragTask; event.dataTransfer.setData('text/plain', ui.draggedTask); } if (b) { ui.draggedBlock = b.dataset.dragBlock; event.dataTransfer.setData('text/plain', ui.draggedBlock); } });
-document.addEventListener('dragover', event => { if (event.target.closest('[data-drop-status]') || (ui.draggedBlock && event.target.closest('[data-block-id]'))) event.preventDefault(); });
-document.addEventListener('drop', event => { const column = event.target.closest('[data-drop-status]'); const targetBlock = event.target.closest('[data-block-id]'); if (column && ui.draggedTask) { event.preventDefault(); const t = state.tasks.find(t => t.id === ui.draggedTask); if (t) { t.status = column.dataset.dropStatus; persist(); renderDatabase(); } } if (targetBlock && ui.draggedBlock) { event.preventDefault(); const list = current().blocks; const from = list.findIndex(b => b.id === ui.draggedBlock); const to = list.findIndex(b => b.id === targetBlock.dataset.blockId); if (from >= 0 && to >= 0) { remember(); const [item] = list.splice(from, 1); list.splice(to, 0, item); persist(); render(); } } ui.draggedTask = null; ui.draggedBlock = null; });
+document.addEventListener('dragover', event => { if (!event.target.closest) return; if (event.target.closest('[data-drop-status]') || (ui.draggedBlock && event.target.closest('[data-block-id]'))) event.preventDefault(); });
+document.addEventListener('drop', event => { const origin = event.target.closest ? event.target : event.target.parentElement; if (!ui.draggedBlock && !ui.draggedTask && !ui.draggedPage && origin?.closest('[data-edit-block]')) { event.preventDefault(); return; } const column = event.target.closest('[data-drop-status]'); const targetBlock = event.target.closest('[data-block-id]'); if (column && ui.draggedTask) { event.preventDefault(); const t = state.tasks.find(t => t.id === ui.draggedTask); if (t) { t.status = column.dataset.dropStatus; persist(); renderDatabase(); } } if (targetBlock && ui.draggedBlock) { event.preventDefault(); const list = current().blocks; const from = list.findIndex(b => b.id === ui.draggedBlock); const to = list.findIndex(b => b.id === targetBlock.dataset.blockId); if (from >= 0 && to >= 0) { remember(); const [item] = list.splice(from, 1); list.splice(to, 0, item); persist(); render(); } } ui.draggedTask = null; ui.draggedBlock = null; });
 document.addEventListener('dragend', () => { ui.draggedTask = null; ui.draggedBlock = null; });
 window.addEventListener('storage', event => { if (event.key === STORAGE_KEY || event.key === null) { persistenceBlocked = true; if ($('#save-state')) $('#save-state').innerHTML = '<span class="save-error">다른 탭 변경 · 새로고침 필요</span>'; toast('다른 탭의 최신 변경을 보호하기 위해 자동 저장을 멈췄습니다. 현재 편집 내용은 백업한 뒤 새로고침하세요.', true); } });
 document.addEventListener('contextmenu', event => {

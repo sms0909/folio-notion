@@ -15,3 +15,26 @@ html[data-theme="dark"] .block-code{background:#23261f;border-color:#343a2c}
 .block-actions{flex-wrap:wrap}
 .block-actions button{display:inline-flex;align-items:center;gap:4px}
 @media (max-width:760px){.block-row{margin-left:calc(var(--indent,0)*16px)}.number-marker{font-size:12px}}
+.block-input strong{font-weight:700}
+.block-input a{color:var(--blue);text-decoration:underline;text-underline-offset:2px;cursor:pointer}
+.inline-code{font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;font-size:.9em;background:#f0efe8;color:#b0503f;border-radius:3px;padding:1px 4px}
+html[data-theme="dark"] .inline-code{background:#33372d;color:#e09483}
+[data-color="gray"]{color:#85877f}[data-color="brown"]{color:#8a6248}[data-color="orange"]{color:#c26a1b}[data-color="yellow"]{color:#a8850f}[data-color="green"]{color:#3f8452}[data-color="blue"]{color:#2f6fb8}[data-color="purple"]{color:#7a52ad}[data-color="pink"]{color:#b8457f}[data-color="red"]{color:#c4443c}
+[data-bg="gray"]{background:#ecece8}[data-bg="brown"]{background:#efe3d9}[data-bg="orange"]{background:#fae4cf}[data-bg="yellow"]{background:#faf0c4}[data-bg="green"]{background:#dcedde}[data-bg="blue"]{background:#dbe8f8}[data-bg="purple"]{background:#e8ddf4}[data-bg="pink"]{background:#f7dce9}[data-bg="red"]{background:#f8dcd9}
+html[data-theme="dark"] [data-color="gray"]{color:#a3a69b}html[data-theme="dark"] [data-color="brown"]{color:#c59b80}html[data-theme="dark"] [data-color="orange"]{color:#e69a55}html[data-theme="dark"] [data-color="yellow"]{color:#d9bb4e}html[data-theme="dark"] [data-color="green"]{color:#7cc08e}html[data-theme="dark"] [data-color="blue"]{color:#7eaee6}html[data-theme="dark"] [data-color="purple"]{color:#b596dc}html[data-theme="dark"] [data-color="pink"]{color:#e389b6}html[data-theme="dark"] [data-color="red"]{color:#ea8079}
+html[data-theme="dark"] [data-bg="gray"]{background:#3a3d35}html[data-theme="dark"] [data-bg="brown"]{background:#49392e}html[data-theme="dark"] [data-bg="orange"]{background:#553c22}html[data-theme="dark"] [data-bg="yellow"]{background:#4f451f}html[data-theme="dark"] [data-bg="green"]{background:#27432e}html[data-theme="dark"] [data-bg="blue"]{background:#263d59}html[data-theme="dark"] [data-bg="purple"]{background:#3d2f52}html[data-theme="dark"] [data-bg="pink"]{background:#532b3f}html[data-theme="dark"] [data-bg="red"]{background:#562c29}
+.format-bar{position:fixed;z-index:95;background:var(--dialog);border:1px solid var(--line);border-radius:7px;box-shadow:var(--shadow);padding:4px;max-width:calc(100vw - 16px)}
+.format-buttons{display:flex;gap:2px}
+.format-buttons button{min-width:30px;height:30px;padding:0 7px;border-radius:4px;font-size:13px;display:inline-flex;align-items:center;justify-content:center}
+.format-buttons button:hover{background:var(--hover)}
+.format-buttons button[aria-pressed="true"],.format-buttons button[aria-expanded="true"]{background:var(--hover);color:var(--blue)}
+.format-buttons .icon{width:15px;height:15px}
+.format-bold{font-weight:700}.format-italic{font-style:italic}.format-underline{text-decoration:underline}.format-strike{text-decoration:line-through}.format-code{font-family:ui-monospace,Consolas,monospace;font-size:11px!important}.format-color{text-decoration:underline;text-decoration-color:var(--blue);text-decoration-thickness:2px}
+#link-form{display:flex;gap:6px;padding:6px 2px 2px;flex-wrap:wrap}
+#link-form input{flex:1;min-width:150px;border:1px solid var(--line);border-radius:5px;background:var(--bg);padding:6px 8px;font-size:12px}
+.format-colors{padding:6px 2px 2px}
+.swatch-row{display:flex;align-items:center;gap:3px;margin:3px 0;flex-wrap:wrap}
+.swatch-row>span{font-size:10px;color:var(--muted);width:42px}
+.swatch{width:24px;height:24px;border:1px solid var(--line);border-radius:4px;font-size:12px;padding:0;display:inline-flex;align-items:center;justify-content:center;overflow:hidden}
+.swatch>span{width:100%;height:100%;display:flex;align-items:center;justify-content:center}
+.swatch[aria-pressed="true"]{outline:2px solid var(--blue);outline-offset:1px}

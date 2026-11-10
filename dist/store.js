@@ -1,3 +1,5 @@
+import { validMarks, toMarkdown } from './richtext.js';
+import { CURRENT_VERSION, supportedVersions, migrate, keepBackup } from './migrate.js';
 export const STORAGE_KEY = 'folio.workspace.v1';
 export const statuses = ['시작 전', '진행 중', '완료'];
 export const priorities = ['높음', '보통', '낮음'];
@@ -17,7 +19,7 @@ export function initialWorkspace() {
   const wiki = makePage('팀 위키', { id: 'wiki', icon: 'book', blocks: [block('h1', '함께 만드는 지식'), block('text', '자주 찾는 정보와 팀의 일하는 방식을 한곳에 정리해요.'), block('h2', '우리가 일하는 방식'), block('bullet', '명확하게 기록하고, 편하게 공유합니다.'), block('bullet', '작은 실험으로 더 좋은 방법을 발견합니다.'), block('todo', '새로운 팀원 온보딩 문서 작성')] });
   const ideas = makePage('아이디어 노트', { id: 'ideas', icon: 'bulb', blocks: [block('h2', '아직 다듬어지지 않아도 괜찮아요.'), block('text', '지금 떠오른 생각을 기록해 보세요.'), block('bullet', '한 주를 돌아보는 나만의 루틴 만들기'), block('quote', '위대한 일은 작은 일들이 모여 이루어진다.')] });
   const meeting = makePage('주간 회의', { id: 'meeting', parentId: 'wiki', icon: 'calendar', blocks: [block('h2', '이번 주의 이야기'), block('text', '논의할 주제를 여기에 적어 주세요.'), block('todo', '다음 액션 정리하기')] });
-  return { version: 1, activeId: home.id, settings: { name: 'Goodus의 워크스페이스', theme: 'light' }, pages: [home, projects, wiki, ideas, meeting], tasks: [
+  return { version: CURRENT_VERSION, activeId: home.id, settings: { name: 'Goodus의 워크스페이스', theme: 'light' }, pages: [home, projects, wiki, ideas, meeting], tasks: [
     { id: uid(), title: '브랜드 가이드 정리', status: '진행 중', priority: '높음', assignee: '나', date: '2026-10-24', note: '컬러, 타이포그래피, 컴포넌트 원칙을 한 문서로 정리합니다.' },
     { id: uid(), title: '워크스페이스 구조 잡기', status: '완료', priority: '보통', assignee: '나', date: '2026-10-20', note: '' },
     { id: uid(), title: '새로운 아이디어 모으기', status: '시작 전', priority: '보통', assignee: '', date: '2026-10-28', note: '' },
@@ -27,7 +29,7 @@ export function initialWorkspace() {
 const isText = (value, max = 100000) => typeof value === 'string' && value.length <= max;
 const isId = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,100}$/.test(value);
 export function validateWorkspace(data) {
-  if (!data || data.version !== 1 || !Array.isArray(data.pages) || data.pages.length < 1 || data.pages.length > 1000 || !Array.isArray(data.tasks) || data.tasks.length > 5000) throw new Error('올바른 Folio 백업 파일이 아닙니다.');
+  if (!data || !supportedVersions.includes(data.version) || !Array.isArray(data.pages) || data.pages.length < 1 || data.pages.length > 1000 || !Array.isArray(data.tasks) || data.tasks.length > 5000) throw new Error('올바른 Folio 백업 파일이 아닙니다.');
   if (!data.settings || !isText(data.settings.name, 120) || !['light', 'dark'].includes(data.settings.theme)) throw new Error('워크스페이스 설정이 올바르지 않습니다.');
   if (data.workspaceId !== undefined && !isId(data.workspaceId)) throw new Error('워크스페이스 식별자가 올바르지 않습니다.');
   const ids = new Set(); const blocks = new Set();
@@ -35,7 +37,7 @@ export function validateWorkspace(data) {
     if (!isId(p.id) || ids.has(p.id) || !isText(p.title, 500) || !['document', 'home', 'database'].includes(p.type) || !isText(p.icon, 30) || typeof p.favorite !== 'boolean' || typeof p.deleted !== 'boolean' || !Array.isArray(p.blocks) || p.blocks.length > 10000 || !(p.parentId === null || isId(p.parentId)) || !isText(p.updatedAt, 100) || !(p.deletedBatch == null || isId(p.deletedBatch))) throw new Error('페이지 데이터가 올바르지 않습니다.');
     ids.add(p.id);
     for (const b of p.blocks) {
-      if (!isId(b.id) || blocks.has(b.id) || !blockTypes.includes(b.type) || !isText(b.text) || typeof b.checked !== 'boolean' || !(b.indent === undefined || (Number.isInteger(b.indent) && b.indent >= 0 && b.indent <= 6)) || !(b.open === undefined || typeof b.open === 'boolean')) throw new Error('블록 데이터가 올바르지 않습니다.');
+      if (!isId(b.id) || blocks.has(b.id) || !blockTypes.includes(b.type) || !isText(b.text) || typeof b.checked !== 'boolean' || !(b.indent === undefined || (Number.isInteger(b.indent) && b.indent >= 0 && b.indent <= 6)) || !(b.open === undefined || typeof b.open === 'boolean') || !(b.marks === undefined || validMarks(b.marks, b.text.length))) throw new Error('블록 데이터가 올바르지 않습니다.');
       blocks.add(b.id);
     }
   }
@@ -54,13 +56,16 @@ export function validateWorkspace(data) {
     taskIds.add(t.id);
   }
   if (!data.pages.some(p => !p.deleted)) throw new Error('활성 페이지가 하나 이상 필요합니다.');
-  const normalized = structuredClone(data);
+  const normalized = migrate(structuredClone(data));
   if (!normalized.pages.some(p => p.id === normalized.activeId && !p.deleted)) normalized.activeId = normalized.pages.find(p => !p.deleted).id;
   return normalized;
 }
 export function loadWorkspace() {
   const raw = localStorage.getItem(STORAGE_KEY);
-  return raw ? validateWorkspace(JSON.parse(raw)) : initialWorkspace();
+  if (!raw) return initialWorkspace();
+  const data = JSON.parse(raw); const state = validateWorkspace(data);
+  if (data.version !== CURRENT_VERSION) keepBackup(raw);
+  return state;
 }
 export function saveWorkspace(state) { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
 export function createPage(state, options = {}) {
@@ -114,8 +119,9 @@ export function pageMarkdown(page) {
     counters.length = depth + 1; counters[depth] = b.type === 'numbered' ? (counters[depth] || 0) + 1 : 0;
     if (b.type === 'divider') return '---';
     if (b.type === 'code') return [fence, ...b.text.split('\n'), fence].map(line => pad + line).join('\n');
-    if (b.type === 'numbered') return `${pad}${counters[depth]}. ${b.text}`;
-    return pad + (b.type === 'todo' && b.checked ? '- [x] ' : prefixes[b.type] ?? '') + b.text;
+    const text = toMarkdown(b.text, b.marks);
+    if (b.type === 'numbered') return `${pad}${counters[depth]}. ${text}`;
+    return pad + (b.type === 'todo' && b.checked ? '- [x] ' : prefixes[b.type] ?? '') + text;
   });
   return `# ${page.title || '제목 없음'}\n\n` + lines.join('\n\n') + '\n';
 }

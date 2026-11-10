@@ -116,7 +116,7 @@ test('export produces a real workspace backup', async ({ screen, browser }) => {
   await screen.getByRole('button', '설정', { exact: true }).tap();
   const file = await browser.waitForDownload(() => screen.getByRole('button', '워크스페이스 내보내기').tap());
   const data = JSON.parse(await readFile(file.absolutePath, 'utf8'));
-  expect(data.version).toBe(1);
+  expect(data.version).toBe(2);
   expect(data.pages.length).toBeGreaterThan(1);
 });
 
