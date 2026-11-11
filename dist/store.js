@@ -2,7 +2,10 @@ import { validMarks, toMarkdown } from './richtext.js';
 import { CURRENT_VERSION, supportedVersions, migrate, keepBackup } from './migrate.js';
 import { projectDatabase, copyDatabase, validateDatabase, limits, statuses, priorities } from './database-model.js';
 export const STORAGE_KEY = 'folio.workspace.v1';
-export const blockTypes = ['text', 'h1', 'h2', 'h3', 'bullet', 'numbered', 'todo', 'toggle', 'quote', 'callout', 'code', 'divider'];
+export const blockTypes = ['text', 'h1', 'h2', 'h3', 'bullet', 'numbered', 'todo', 'toggle', 'quote', 'callout', 'code', 'divider', 'toc', 'page'];
+// Built-in page covers: [name, label].
+export const covers = [['sunrise', '노을'], ['forest', '숲'], ['ocean', '바다'], ['dusk', '해질녘'], ['mint', '민트'], ['rose', '장미'], ['sand', '모래'], ['slate', '먹색']];
+export const TEMPLATE_LIMIT = 50;
 export const uid = () => crypto.randomUUID();
 export const block = (type = 'text', text = '', checked = false) => ({ id: uid(), type, text, checked });
 export function makePage(title = '제목 없음', options = {}) {
@@ -27,6 +30,13 @@ export function initialWorkspace() {
 }
 const isText = (value, max = 100000) => typeof value === 'string' && value.length <= max;
 const isId = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,100}$/.test(value);
+// A page link block names its page in `target`; the page itself may be gone by now.
+const validBlock = b => !!b && isId(b.id) && blockTypes.includes(b.type) && isText(b.text) && typeof b.checked === 'boolean' && (b.indent === undefined || (Number.isInteger(b.indent) && b.indent >= 0 && b.indent <= 6)) && (b.open === undefined || typeof b.open === 'boolean') && (b.marks === undefined || validMarks(b.marks, b.text.length)) && (b.target === undefined || (b.type === 'page' && isId(b.target)));
+// Returns a copy of stored blocks under new ids, or throws when they are not usable.
+export function copyBlocks(list) {
+  if (!Array.isArray(list) || list.length > 10000 || !list.every(validBlock)) throw new Error('블록 데이터가 올바르지 않습니다.');
+  return structuredClone(list).map(b => ({ ...b, id: uid() }));
+}
 export function validateWorkspace(data) {
   if (!data || !supportedVersions.includes(data.version) || !Array.isArray(data.pages) || data.pages.length < 1 || data.pages.length > 1000 || (data.version < 3 && (!Array.isArray(data.tasks) || data.tasks.length > 5000))) throw new Error('올바른 Folio 백업 파일이 아닙니다.');
   if (!data.settings || !isText(data.settings.name, 120) || !['light', 'dark'].includes(data.settings.theme)) throw new Error('워크스페이스 설정이 올바르지 않습니다.');
@@ -35,14 +45,22 @@ export function validateWorkspace(data) {
   // Block ids are unique across the whole workspace, database rows included.
   const checkBlocks = list => {
     for (const b of list) {
-      if (!b || !isId(b.id) || blocks.has(b.id) || !blockTypes.includes(b.type) || !isText(b.text) || typeof b.checked !== 'boolean' || !(b.indent === undefined || (Number.isInteger(b.indent) && b.indent >= 0 && b.indent <= 6)) || !(b.open === undefined || typeof b.open === 'boolean') || !(b.marks === undefined || validMarks(b.marks, b.text.length))) throw new Error('블록 데이터가 올바르지 않습니다.');
+      if (!validBlock(b) || blocks.has(b.id)) throw new Error('블록 데이터가 올바르지 않습니다.');
       blocks.add(b.id);
     }
   };
   for (const p of data.pages) {
-    if (!isId(p.id) || ids.has(p.id) || !isText(p.title, 500) || !['document', 'home', 'database'].includes(p.type) || !isText(p.icon, 30) || typeof p.favorite !== 'boolean' || typeof p.deleted !== 'boolean' || !Array.isArray(p.blocks) || p.blocks.length > 10000 || !(p.parentId === null || isId(p.parentId)) || !isText(p.updatedAt, 100) || !(p.deletedBatch == null || isId(p.deletedBatch))) throw new Error('페이지 데이터가 올바르지 않습니다.');
+    if (!isId(p.id) || ids.has(p.id) || !isText(p.title, 500) || !['document', 'home', 'database'].includes(p.type) || !isText(p.icon, 30) || typeof p.favorite !== 'boolean' || typeof p.deleted !== 'boolean' || !Array.isArray(p.blocks) || p.blocks.length > 10000 || !(p.parentId === null || isId(p.parentId)) || !isText(p.updatedAt, 100) || !(p.deletedBatch == null || isId(p.deletedBatch)) || !(p.cover === undefined || covers.some(([name]) => name === p.cover)) || !(p.fullWidth === undefined || typeof p.fullWidth === 'boolean') || !(p.smallText === undefined || typeof p.smallText === 'boolean')) throw new Error('페이지 데이터가 올바르지 않습니다.');
     ids.add(p.id);
     checkBlocks(p.blocks);
+  }
+  if (data.templates !== undefined) {
+    const seen = new Set();
+    if (!Array.isArray(data.templates) || data.templates.length > TEMPLATE_LIMIT) throw new Error('템플릿 데이터가 올바르지 않습니다.');
+    for (const t of data.templates) {
+      if (!t || !isId(t.id) || seen.has(t.id) || !isText(t.title, 500) || !isText(t.icon, 30) || !Array.isArray(t.blocks) || t.blocks.length > 10000) throw new Error('템플릿 데이터가 올바르지 않습니다.');
+      seen.add(t.id); checkBlocks(t.blocks);
+    }
   }
   const byId = new Map(data.pages.map(p => [p.id, p]));
   for (const p of data.pages) {
@@ -121,13 +139,23 @@ export function restorePage(state, id) {
   state.pages.forEach(p => { if (ids.has(p.id) && p.deleted && p.deletedBatch === batch) { p.deleted = false; p.deletedBatch = null; } });
   if (page.parentId && state.pages.find(p => p.id === page.parentId)?.deleted) page.parentId = null;
 }
-export function pageMarkdown(page) {
+// Removes pages in the trash for good, together with everything below them and their databases.
+export function purgePages(state, ids) {
+  const doomed = new Set();
+  for (const id of ids) for (const d of descendants(state, id)) if (state.pages.find(p => p.id === d)?.deleted) doomed.add(d);
+  state.pages = state.pages.filter(p => !doomed.has(p.id));
+  for (const id of doomed) delete state.databases[id];
+  return doomed;
+}
+// `titleOf` gives the title of a linked page, or null when it no longer exists.
+export function pageMarkdown(page, titleOf = () => null) {
   const prefixes = { text: '', h1: '# ', h2: '## ', h3: '### ', bullet: '- ', toggle: '- ', quote: '> ', callout: '> ', todo: '- [ ] ' };
   const fence = '```'; const counters = [];
-  const lines = page.blocks.map(b => {
+  const lines = page.blocks.filter(b => b.type !== 'toc').map(b => {
     const depth = Math.min(6, Math.max(0, b.indent | 0)); const pad = '    '.repeat(depth);
     counters.length = depth + 1; counters[depth] = b.type === 'numbered' ? (counters[depth] || 0) + 1 : 0;
     if (b.type === 'divider') return '---';
+    if (b.type === 'page') return `${pad}→ ${titleOf(b.target) ?? '삭제된 페이지'}`;
     if (b.type === 'code') return [fence, ...b.text.split('\n'), fence].map(line => pad + line).join('\n');
     const text = toMarkdown(b.text, b.marks);
     if (b.type === 'numbered') return `${pad}${counters[depth]}. ${text}`;

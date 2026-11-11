@@ -41,7 +41,7 @@ test('version 2 tasks become database rows with the note as a block', async ({ s
   await screen.getByRole('button', '페이지로 열기').tap();
   await expect(screen.getByLabel('블록 1 내용')).toHaveText('옛 메모');
   const data = await stored(browser);
-  expect(data.version).toBe(3);
+  expect(data.version).toBe(4);
   expect(data.tasks).toBeUndefined();
   expect(data.databases.projects.rows.map((r: any) => r.title)).toEqual(['옛 작업']);
   expect(data.databases.projects.quick.sort).toBe('asc');

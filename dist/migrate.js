@@ -1,9 +1,9 @@
 // Storage format upgrades. Each step takes the previous shape and returns the next one;
 // `migrate` runs on every load and import, so older backups keep working.
 import { projectDatabase } from './database-model.js';
-export const CURRENT_VERSION = 3;
+export const CURRENT_VERSION = 4;
 export const BACKUP_KEY = 'folio.workspace.v1.backup';
-export const supportedVersions = [1, 2, 3];
+export const supportedVersions = [1, 2, 3, 4];
 // v1 → v2: blocks may carry inline `marks`. Nothing has to be rewritten, only relabelled.
 function toV2(data) { data.version = 2; return data; }
 // v2 → v3: the single shared task list becomes one database per database page.
@@ -23,9 +23,13 @@ function toV3(data) {
   delete data.tasks; delete data.settings.database; data.version = 3;
   return data;
 }
+// v3 → v4: pages gain covers and layout options, blocks gain page links and tables of contents,
+// and the workspace gains templates. All of it is optional, so nothing has to be rewritten.
+function toV4(data) { data.version = 4; return data; }
 export function migrate(data) {
   if (data.version === 1) data = toV2(data);
   if (data.version === 2) data = toV3(data);
+  if (data.version === 3) data = toV4(data);
   return data;
 }
 // Keeps the untouched pre-upgrade data once, so a failed upgrade can be recovered by hand.

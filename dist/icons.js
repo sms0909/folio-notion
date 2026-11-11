@@ -41,4 +41,11 @@ const paths = {
   code: '<path d="m8 7-5 5 5 5M16 7l5 5-5 5M14 4l-4 16"/>',
   shield: '<path d="m12 3 9 4v5c0 5-5 8-9 10-4-2-9-5-9-10V7Z"/><path d="m8 12 3 3 5-6"/>',
 };
-export function icon(name, className = '') { return `<svg class="icon ${className}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${Object.hasOwn(paths, name) ? paths[name] : paths.file}</svg>`; }
+const svg = body => `viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+const escText = value => value.replace(/[&<>"']/g, char => `&#${char.charCodeAt(0)};`);
+export const hasIcon = name => Object.hasOwn(paths, name);
+// A page icon is either one of the drawings above or an emoji, which is drawn as text so it scales the same way.
+export function icon(name, className = '') {
+  if (typeof name === 'string' && !hasIcon(name) && /\P{ASCII}/u.test(name)) return `<svg class="icon emoji-icon ${className}" ${svg(`<text x="12" y="13" text-anchor="middle" dominant-baseline="central" font-size="19" stroke="none" fill="currentColor">${escText(name)}</text>`)}`;
+  return `<svg class="icon ${className}" ${svg(hasIcon(name) ? paths[name] : paths.file)}`;
+}

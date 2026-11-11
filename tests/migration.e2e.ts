@@ -31,16 +31,16 @@ test('version 1 data is upgraded on load and the original is kept', async ({ scr
   expect(await browser.evaluate(() => localStorage.getItem('folio.workspace.v1.backup'))).toBe(old);
   await screen.getByLabel('블록 1 내용').pressSequentially(' 추가');
   const data = await stored(browser);
-  expect(data.version).toBe(3);
+  expect(data.version).toBe(4);
   expect(data.pages.find((p: any) => p.id === data.activeId).blocks[0].text).toContain('추가');
   expect(await browser.evaluate(() => localStorage.getItem('folio.workspace.v1.backup'))).toBe(old);
 });
 
-test('exports use version 3 and include marks', async ({ screen, browser }) => {
+test('exports use version 4 and include marks', async ({ screen, browser }) => {
   await screen.getByRole('button', '새 페이지', { exact: true }).tap();
   await screen.getByLabel('블록 1 내용').pressSequentially('**굵은** 글');
   const data = await backup(screen, browser);
-  expect(data.version).toBe(3);
+  expect(data.version).toBe(4);
   const page = data.pages.find((p: any) => p.id === data.activeId);
   expect(page.blocks[0].text).toBe('굵은 글');
   expect(page.blocks[0].marks).toEqual([{ start: 0, end: 2, type: 'bold' }]);
@@ -53,12 +53,12 @@ test('a version 1 backup can still be imported', async ({ screen, browser }) => 
   await screen.getByLabel('백업 파일 선택').setInputFiles(await fixture(data));
   await screen.getByRole('button', '백업으로 교체').tap();
   await expect(screen.getByTestId('workspace-name')).toHaveText('옛 백업');
-  expect((await stored(browser)).version).toBe(3);
+  expect((await stored(browser)).version).toBe(4);
 });
 
 test('backups from a newer version are refused', async ({ screen, browser }) => {
   const data = await backup(screen, browser);
-  data.version = 4;
+  data.version = 5;
   await screen.getByLabel('백업 파일 선택').setInputFiles(await fixture(data));
   await expect(browser.locator('#import-feedback')).toContainText('올바른 Folio 백업 파일이 아닙니다.');
   await expect(screen.getByRole('button', '백업으로 교체')).toBeHidden();

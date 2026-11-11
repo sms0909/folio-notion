@@ -6,7 +6,9 @@ import { icon } from './icons.js';
 import { HOLD, MAX_TEXT, listTypes, staticTypes, markdownShortcut, indentOf, numbering, hiddenBlocks, subtreeEnd, shiftIndent, slashMatches, readText, selectionOffsets, setSelection, caretOnEdge } from './blocks.js';
 import * as history from './history.js';
 import { colors, safeHref, normalizeMarks, toggleMark, covers, marksAt, marksIn, sliceMarks, shiftMarks, spliceMarks, renderInline, readInline, nodeMarks, inlineShortcut } from './richtext.js';
-import { block, uid, blockTypes, loadWorkspace, initialWorkspace, saveWorkspace, STORAGE_KEY, createPage, duplicatePage, trashPage, restorePage, descendants, movePage, validateWorkspace, pageMarkdown } from './store.js';
+import { block, uid, blockTypes, loadWorkspace, initialWorkspace, saveWorkspace, STORAGE_KEY, createPage, duplicatePage, trashPage, restorePage, descendants, movePage, validateWorkspace, pageMarkdown, covers as pageCovers, TEMPLATE_LIMIT, copyBlocks, purgePages } from './store.js';
+import { KEEP, versions, saveVersion, dropVersions } from './page-history.js';
+import { MAX_IMPORT_SIZE, markdownToPage, parseCSV, csvToDatabase, databaseCSV, pageHTML as exportHTML } from './import-export.js';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -19,7 +21,8 @@ try { lastSavedRaw = localStorage.getItem(STORAGE_KEY); } catch {}
 const savedSidebar = sidebarSettings(state);
 const thisMonth = () => { const now = new Date(); return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`; };
 // `row` is `{ db, id }` while a database row is open as a page; `query` and `month` belong to the database on screen.
-const ui = { sidebar: false, collapsed: savedSidebar.collapsed, sidebarPrefs: savedSidebar, searchScope: 'all', searchSort: 'recent', searchQuery: '', draggedPage: null, query: '', row: null, month: thisMonth(), panel: null, confirmProp: null, staleCells: false, menu: null, blockMenu: null, modal: null, expanded: new Set(savedSidebar.expanded), lastFocus: null, pendingImport: null, draggedRow: null, draggedBlock: null };
+// `confirm` names the delete button that was pressed once and now asks to be pressed again.
+const ui = { sidebar: false, collapsed: savedSidebar.collapsed, sidebarPrefs: savedSidebar, searchScope: 'all', searchSort: 'recent', searchQuery: '', draggedPage: null, query: '', row: null, month: thisMonth(), panel: null, confirmProp: null, staleCells: false, menu: null, blockMenu: null, modal: null, expanded: new Set(savedSidebar.expanded), lastFocus: null, pendingImport: null, draggedRow: null, draggedBlock: null, confirm: null, linking: null, trashQuery: '', dirty: new Set(), snapAt: new Map() };
 const current = () => state.pages.find(p => p.id === state.activeId && !p.deleted) || state.pages.find(p => !p.deleted);
 const dbPage = id => state.pages.find(p => p.id === id);
 // The home page shows the project tracker (or, without one, the first database).
@@ -36,8 +39,26 @@ function toast(message, error = false) {
   const el = $('#toast'); el.textContent = message; el.className = `visible${error ? ' error' : ''}`;
   clearTimeout(toast.timer); toast.timer = setTimeout(() => el.className = '', 3300);
 }
+// Pages edited since their last saved version. A version is saved when the page is left
+// and after every ten minutes of editing.
+const SNAP_EVERY = 600_000;
+function keepVersion(page, manual = false) {
+  const result = saveVersion(workspaceId(state), page); ui.dirty.delete(page.id); ui.snapAt.set(page.id, Date.now());
+  if (result.pruned) toast(`저장 공간이 부족해 오래된 페이지 기록 ${result.pruned}개를 지웠습니다.`, true);
+  else if (manual) toast(result.saved ? '현재 버전을 저장했습니다.' : result.same ? '마지막 버전과 내용이 같습니다.' : '페이지 기록을 저장하지 못했습니다.', !result.saved && !result.same);
+  return result;
+}
+function flushVersions() {
+  for (const id of [...ui.dirty]) { const page = state.pages.find(p => p.id === id && !p.deleted); if (page) keepVersion(page); else ui.dirty.delete(id); }
+}
+function trackEdit() {
+  const page = current(); if (openRow() || page.type === 'database') return;
+  ui.dirty.add(page.id);
+  if (!ui.snapAt.has(page.id)) ui.snapAt.set(page.id, Date.now());
+  else if (Date.now() - ui.snapAt.get(page.id) >= SNAP_EVERY) keepVersion(page);
+}
 function persist(touch = true) {
-  if (touch) current().updatedAt = new Date().toISOString();
+  if (touch) { current().updatedAt = new Date().toISOString(); trackEdit(); }
   try { if (persistenceBlocked) throw new Error(); if (localStorage.getItem(STORAGE_KEY) !== lastSavedRaw) { persistenceBlocked = true; throw new Error(); } saveWorkspace(state); lastSavedRaw = localStorage.getItem(STORAGE_KEY); if ($('#save-state')) $('#save-state').innerHTML = `${icon('check')}<span>저장됨</span>`; return true; }
   catch { if ($('#save-state')) $('#save-state').innerHTML = '<span class="save-error">저장 안 됨 · 백업 필요</span>'; if (!persist.warned) { toast('브라우저에 저장하지 못했습니다. 설정에서 백업을 내보내 주세요.', true); persist.warned = true; } return false; }
 }
@@ -50,14 +71,45 @@ function saveSidebar() {
 function rememberPage(id) {
   ui.sidebarPrefs.recents = [id, ...ui.sidebarPrefs.recents.filter(item => item !== id)].slice(0, 20);
 }
-function go(id) { state.activeId = id; rememberPage(id); ui.sidebar = false; ui.menu = null; ui.blockMenu = null; ui.row = null; ui.query = ''; saveSidebar(); render(); $('.main-scroll').scrollTop = 0; }
+function go(id) { flushVersions(); state.activeId = id; rememberPage(id); ui.sidebar = false; ui.menu = null; ui.blockMenu = null; ui.row = null; ui.query = ''; saveSidebar(); render(); $('.main-scroll').scrollTop = 0; }
 // `setup` runs on the new page before it is saved, for pages that need more than blocks.
-function addPage(options = {}, setup = null) { if (state.pages.length >= 1000) { toast('페이지는 최대 1,000개까지 만들 수 있습니다.', true); return false; } const page = createPage(state, options); setup?.(page); if (page.parentId) ui.expanded.add(page.parentId); ui.sidebarPrefs.closed.pages = false; ui.row = null; ui.query = ''; rememberPage(page.id); persist(); saveSidebar(); ui.sidebar = false; closeModal(false); render(); $('#page-title').focus(); $('#page-title').select(); return true; }
+function addPage(options = {}, setup = null) { if (state.pages.length >= 1000) { toast('페이지는 최대 1,000개까지 만들 수 있습니다.', true); return false; } flushVersions(); const page = createPage(state, options); setup?.(page); if (page.parentId) ui.expanded.add(page.parentId); ui.sidebarPrefs.closed.pages = false; ui.row = null; ui.query = ''; rememberPage(page.id); persist(); saveSidebar(); ui.sidebar = false; closeModal(false); render(); $('#page-title').focus(); $('#page-title').select(); return true; }
 function sidebar() { return sidebarHTML(state, ui); }
 function breadcrumb(page) {
   const chain = []; let cursor = page; const seen = new Set();
   while (cursor && !seen.has(cursor.id)) { seen.add(cursor.id); chain.unshift(cursor); cursor = state.pages.find(p => p.id === cursor.parentId); }
   return chain.map((p, i) => `${i ? '<span class="crumb-sep">/</span>' : ''}<button data-action="open" data-id="${esc(p.id)}" class="crumb">${icon(p.icon)}<span data-page-name="${esc(p.id)}">${esc(pageName(p))}</span></button>`).join('');
+}
+const livePage = id => state.pages.find(p => p.id === id && !p.deleted);
+// The title of a linked page, or null when the page is gone.
+const titleOf = id => { const page = livePage(id); return page ? pageName(page) : null; };
+function tocHTML(blocks) {
+  const heads = blocks.filter(b => /^h[123]$/.test(b.type) && b.text.trim());
+  return heads.map(b => `<button class="toc-item toc-${b.type}" data-action="toc-jump" data-id="${esc(b.id)}">${esc(b.text)}</button>`).join('') || '<p class="toc-empty">제목 블록을 추가하면 목차가 만들어집니다.</p>';
+}
+function refreshToc() { for (const el of $$('[data-toc]')) el.innerHTML = tocHTML(doc().blocks); }
+// Blocks without text of their own: divider, table of contents and page link.
+function staticHTML(b, context) {
+  if (b.type === 'divider') return '<hr>';
+  if (b.type === 'toc') return `<nav class="toc" aria-label="목차" data-toc>${tocHTML(context.blocks)}</nav>`;
+  const target = livePage(b.target);
+  return target ? `<button class="page-link-block" data-action="open" data-id="${esc(target.id)}" aria-label="페이지 링크: ${esc(pageName(target))}">${icon(target.icon)}<span>${esc(pageName(target))}</span>${icon('arrow')}</button>` : `<span class="page-link-block missing">${icon('file')}<span>삭제된 페이지</span></span>`;
+}
+const linksTo = (blocks, id) => blocks.some(b => b.type === 'page' && b.target === id);
+// Pages and database rows that hold a link to the page.
+function backlinksHTML(pageId) {
+  const items = [];
+  for (const p of state.pages) {
+    if (p.deleted || p.id === pageId) continue;
+    if (linksTo(p.blocks, pageId)) items.push(`<button data-action="open" data-id="${esc(p.id)}" aria-label="백링크: ${esc(pageName(p))}">${icon(p.icon)}<span>${esc(pageName(p))}</span></button>`);
+    for (const row of state.databases[p.id]?.rows || []) if (linksTo(row.blocks, pageId)) items.push(`<button data-action="search-open-row" data-db="${esc(p.id)}" data-id="${esc(row.id)}" aria-label="백링크: ${esc(rowName(row))} (${esc(pageName(p))})">${icon('file')}<span>${esc(rowName(row))}</span><small>${esc(pageName(p))}</small></button>`);
+  }
+  return items.length ? `<nav class="backlinks" aria-label="백링크"><h2>${icon('arrow')}이 페이지를 링크한 곳 ${items.length}개</h2>${items.join('')}</nav>` : '';
+}
+const hasCover = page => !!page.cover || page.type === 'home';
+function coverHTML(page) {
+  if (page.cover) return `<div class="cover page-cover cover-${page.cover}" data-testid="page-cover" data-cover="${page.cover}"></div>`;
+  return page.type === 'home' ? '<div class="cover"><img src="/cover.svg" alt="햇살과 올리브 나무가 있는 추상 풍경"><span>ROOM FOR YOUR NEXT BIG IDEA.</span><span class="cover-label">YOUR PERSONAL SPACE</span></div>' : '<div class="page-spacer"></div>';
 }
 const placeholders = { h1: '제목 1', h2: '제목 2', h3: '제목 3', code: '코드를 입력하세요', toggle: '토글' };
 // A trailing line break needs a <br> so the browser gives the last empty line a box.
@@ -69,11 +121,11 @@ function blockHTML(b, i, context) {
     ${b.type === 'todo' ? `<input class="todo-check" type="checkbox" data-check="${esc(b.id)}" aria-label="할 일 ${num} 완료" ${b.checked ? 'checked' : ''}>` : ''}
     ${b.type === 'bullet' ? '<span class="bullet-dot">•</span>' : ''}${b.type === 'callout' ? `<span class="callout-icon">${icon('bulb')}</span>` : ''}
     ${b.type === 'numbered' ? `<span class="number-marker" data-testid="block-${num}-number">${context.numbers[i]}.</span>` : ''}${b.type === 'toggle' ? `<button class="toggle-arrow ${open ? 'open' : ''}" data-action="toggle-open" data-id="${esc(b.id)}" aria-label="토글 ${num} ${open ? '접기' : '펼치기'}" aria-expanded="${open}">${icon('chevron')}</button>` : ''}
-    ${b.type === 'divider' ? '<hr>' : `<div class="block-input ${b.checked ? 'checked' : ''}" contenteditable="true" role="textbox" aria-multiline="true" maxlength="${MAX_TEXT}" aria-label="블록 ${num} 내용" data-edit-block="${esc(b.id)}" data-placeholder="${placeholders[b.type] || '내용을 입력하거나 / 로 블록 추가'}" spellcheck="false">${inlineHTML(b)}</div>`}
+    ${staticTypes.includes(b.type) ? staticHTML(b, context) : `<div class="block-input ${b.checked ? 'checked' : ''}" contenteditable="true" role="textbox" aria-multiline="true" maxlength="${MAX_TEXT}" aria-label="블록 ${num} 내용" data-edit-block="${esc(b.id)}" data-placeholder="${placeholders[b.type] || '내용을 입력하거나 / 로 블록 추가'}" spellcheck="false">${inlineHTML(b)}</div>`}
   </div>`;
 }
 function editor(page) {
-  const context = { numbers: numbering(page.blocks), hidden: hiddenBlocks(page.blocks) };
+  const context = { numbers: numbering(page.blocks), hidden: hiddenBlocks(page.blocks), blocks: page.blocks };
   return `<div class="editor" aria-label="페이지 편집기">${page.blocks.map((b, i) => blockHTML(b, i, context)).join('')}</div><button class="add-block-line" data-action="append-block">${icon('plus')}블록 추가<span>/ 를 눌러 더 많은 옵션 보기</span></button>`;
 }
 function quickLinks() {
@@ -88,10 +140,10 @@ function render() {
   const footer = `<footer class="page-footer"><span class="footer-logo">f.</span><span>조금 더 정리된 생각, 조금 더 가벼운 하루.</span><span class="footer-shortcut">${icon('shield')}로컬 자동 저장</span></footer>`;
   const content = row ? `<div class="page-spacer"></div><article class="page-content row-page"><button class="row-back" data-action="close-row" aria-label="데이터베이스로 돌아가기">${icon('arrow')}<span>${esc(pageName(page))}</span></button><div class="page-icon">${icon('file')}</div><div class="page-title-line"><input id="row-title" aria-label="${esc(db.itemName)} 제목" value="${esc(row.title)}" maxlength="500" placeholder="제목 없음" spellcheck="false"></div><div id="row-props" class="row-props" role="group" aria-label="${esc(db.itemName)} 속성">${rowPropsHTML(db, row)}</div>
     ${editor(row)}<div class="document-bottom"><button class="button danger" data-action="delete-row" data-id="${esc(row.id)}">${icon('trash')}${esc(db.itemName)} 삭제</button><span>${esc(pageName(page))}의 ${esc(db.itemName)}</span></div>${footer}</article>`
-    : `${page.type === 'home' ? '<div class="cover"><img src="/cover.svg" alt="햇살과 올리브 나무가 있는 추상 풍경"><span>ROOM FOR YOUR NEXT BIG IDEA.</span><span class="cover-label">YOUR PERSONAL SPACE</span></div>' : '<div class="page-spacer"></div>'}
-    <article class="page-content ${page.type === 'home' ? 'with-cover' : ''}"><div class="page-icon ${page.type === 'home' ? 'home-page-icon' : ''}">${icon(page.icon)}</div><div class="page-title-line"><input id="page-title" aria-label="페이지 제목" value="${esc(page.title)}" maxlength="500" placeholder="제목 없음" spellcheck="false"></div><div class="page-meta"><span>${icon('clock')}나만의 속도로, 매일 조금씩</span><span class="meta-dot">·</span><span>개인 페이지</span></div>
+    : `${coverHTML(page)}
+    <article class="page-content${hasCover(page) ? ' with-cover' : ''}${page.fullWidth ? ' full-width' : ''}${page.smallText ? ' small-text' : ''}"><button class="page-icon ${hasCover(page) ? 'home-page-icon' : ''}" data-action="icon-picker" aria-label="페이지 아이콘 변경" aria-haspopup="true">${icon(page.icon)}</button><div class="page-title-line"><input id="page-title" aria-label="페이지 제목" value="${esc(page.title)}" maxlength="500" placeholder="제목 없음" spellcheck="false"></div><div class="page-meta"><span>${icon('clock')}나만의 속도로, 매일 조금씩</span><span class="meta-dot">·</span><span>개인 페이지</span><button class="meta-button" data-action="cover-picker" aria-haspopup="true">${icon('sparkles')}${page.cover ? '커버 변경' : '커버 추가'}</button></div>
     ${page.type !== 'database' ? editor(page) : ''}${page.type === 'home' ? quickLinks() : ''}${shown ? `<section id="database" class="database" aria-label="${esc(pageName(dbPage(shown)))} 관리"></section>` : ''}
-    ${page.type === 'document' ? `<div class="document-bottom"><span class="document-buttons"><button class="button" data-action="subpage" data-id="${esc(page.id)}">${icon('plus')}하위 페이지 추가</button><button class="button" data-action="new-database" data-id="${esc(page.id)}">${icon('table')}데이터베이스 추가</button></span><span>기록은 생각을 선명하게 만듭니다.</span></div>` : ''}${footer}</article>`;
+    ${backlinksHTML(page.id)}${page.type === 'document' ? `<div class="document-bottom"><span class="document-buttons"><button class="button" data-action="subpage" data-id="${esc(page.id)}">${icon('plus')}하위 페이지 추가</button><button class="button" data-action="new-database" data-id="${esc(page.id)}">${icon('table')}데이터베이스 추가</button></span><span>기록은 생각을 선명하게 만듭니다.</span></div>` : ''}${footer}</article>`;
   $('#app').innerHTML = `${sidebar()}${ui.sidebar ? '<div class="mobile-scrim" data-action="close-sidebar"></div>' : ''}<main class="main-shell ${ui.collapsed ? 'expanded-main' : ''}">
     <header class="topbar"><div class="topbar-left"><button class="icon-button sidebar-open" data-action="open-sidebar" aria-label="사이드바 열기">${icon('menu')}</button><div class="breadcrumbs">${breadcrumb(page)}${row ? `<span class="crumb-sep">/</span><span class="crumb crumb-current">${icon('file')}<span id="row-crumb">${esc(rowName(row))}</span></span>` : ''}</div></div><div class="topbar-right"><span id="save-state" class="save-state">${icon('check')}<span>저장됨</span></span>${row ? '' : `<button class="icon-button favorite-toggle ${page.favorite ? 'is-favorite' : ''}" data-action="favorite" aria-label="${page.favorite ? '즐겨찾기 해제' : '즐겨찾기 추가'}">${icon('star')}</button>`}<button class="button export-button" data-action="export-page">${icon('download')}내보내기</button>${row ? '' : `<button class="icon-button" data-action="page-menu" aria-label="페이지 더보기">${icon('more')}</button>`}</div></header>
     <div class="main-scroll">${content}</div></main>`;
@@ -277,7 +329,7 @@ function openAccount() {
 }
 function refreshSidebar() { const holder = document.createElement('div'); holder.innerHTML = sidebar(); $('.sidebar').replaceWith(holder.firstElementChild); }
 function updateTitleUI() { $$('[data-page-name]').filter(el => el.dataset.pageName === current().id).forEach(el => { el.textContent = pageName(current()); }); document.title = `${pageName(current())} — Folio`; }
-const typeOptions = [ ['text', '텍스트', 'text', '일반 텍스트를 입력합니다', 'text paragraph 문단'], ['h1', '제목 1', 'text', '큰 섹션 제목', 'heading'], ['h2', '제목 2', 'text', '중간 크기의 제목', 'heading'], ['h3', '제목 3', 'text', '작은 크기의 제목', 'heading'], ['bullet', '글머리 기호', 'bullet', '간결하게 목록을 작성합니다', 'list 목록'], ['numbered', '번호 매기기 목록', 'numbered', '순서가 있는 목록을 작성합니다', 'list ordered 숫자'], ['todo', '할 일 목록', 'check', '완료할 일을 체크합니다', 'checkbox 체크'], ['toggle', '토글 목록', 'chevron', '내용을 접고 펼칩니다', 'collapse 접기'], ['quote', '인용', 'quote', '기억하고 싶은 문장', 'blockquote'], ['callout', '콜아웃', 'bulb', '중요한 정보를 강조합니다', '강조'], ['code', '코드', 'code', '고정폭 글꼴로 코드를 적습니다', 'pre 코드 블록'], ['divider', '구분선', 'more', '내용 사이에 여백을 만듭니다', 'hr line 선'] ];
+const typeOptions = [ ['text', '텍스트', 'text', '일반 텍스트를 입력합니다', 'text paragraph 문단'], ['h1', '제목 1', 'text', '큰 섹션 제목', 'heading'], ['h2', '제목 2', 'text', '중간 크기의 제목', 'heading'], ['h3', '제목 3', 'text', '작은 크기의 제목', 'heading'], ['bullet', '글머리 기호', 'bullet', '간결하게 목록을 작성합니다', 'list 목록'], ['numbered', '번호 매기기 목록', 'numbered', '순서가 있는 목록을 작성합니다', 'list ordered 숫자'], ['todo', '할 일 목록', 'check', '완료할 일을 체크합니다', 'checkbox 체크'], ['toggle', '토글 목록', 'chevron', '내용을 접고 펼칩니다', 'collapse 접기'], ['quote', '인용', 'quote', '기억하고 싶은 문장', 'blockquote'], ['callout', '콜아웃', 'bulb', '중요한 정보를 강조합니다', '강조'], ['code', '코드', 'code', '고정폭 글꼴로 코드를 적습니다', 'pre 코드 블록'], ['divider', '구분선', 'more', '내용 사이에 여백을 만듭니다', 'hr line 선'], ['toc', '목차', 'numbered', '제목 블록으로 목차를 만듭니다', 'toc contents 차례'], ['page', '페이지 링크', 'file', '다른 페이지로 가는 링크를 넣습니다', 'link mention 링크 연결'] ];
 // The slash menu can also create a database, as a subpage of the current page.
 const databaseOption = ['database', '데이터베이스', 'table', '하위 페이지로 데이터베이스를 만듭니다', 'db 표 table'];
 const menuOptions = () => openRow() ? typeOptions : [...typeOptions, databaseOption];
@@ -292,10 +344,38 @@ function positionMenu(el, anchor) {
 function renderPageMenu(pageId = current().id, anchor = null) {
   removePopovers(); ui.menu = true;
   const page = state.pages.find(p => p.id === pageId && !p.deleted); if (!page) return;
-  const id = esc(page.id);
+  const id = esc(page.id); const isDb = page.type === 'database';
+  const item = (action, glyph, label) => `<button role="menuitem" data-action="${action}" data-id="${id}">${icon(glyph)}${label}</button>`;
+  const check = (action, glyph, label, on) => `<button role="menuitemcheckbox" aria-checked="${!!on}" data-action="${action}" data-id="${id}">${icon(glyph)}${label}<span class="menu-check">${icon('check')}</span></button>`;
   const el = document.createElement('div'); el.className = 'popover page-menu'; el.setAttribute('role', 'menu');
-  el.innerHTML = `<div class="menu-caption">${esc(pageName(page))}</div><button role="menuitem" data-action="rename-page" data-id="${id}">${icon('text')}이름 바꾸기</button><button role="menuitem" data-action="sidebar-favorite" data-id="${id}">${icon('star')}${page.favorite ? '즐겨찾기에서 제거' : '즐겨찾기에 추가'}</button><button role="menuitem" data-action="duplicate" data-id="${id}">${icon('copy')}페이지 복제</button><button role="menuitem" data-action="move-page" data-id="${id}">${icon('file')}페이지 이동</button><button role="menuitem" data-action="sibling-up" data-id="${id}">${icon('sort')}위로 이동</button><button role="menuitem" data-action="sibling-down" data-id="${id}">${icon('sort')}아래로 이동</button><button role="menuitem" data-action="subpage" data-id="${id}">${icon('plus')}하위 페이지 추가</button><button role="menuitem" data-action="export-page" data-id="${id}">${icon('download')}Markdown 내보내기</button><div class="menu-divider"></div><button class="danger" role="menuitem" data-action="delete-page" data-id="${id}">${icon('trash')}휴지통으로 이동</button>`;
+  el.innerHTML = `<div class="menu-caption">${esc(pageName(page))}</div>${item('rename-page', 'text', '이름 바꾸기')}${item('sidebar-favorite', 'star', page.favorite ? '즐겨찾기에서 제거' : '즐겨찾기에 추가')}${item('duplicate', 'copy', '페이지 복제')}${item('move-page', 'file', '페이지 이동')}${item('sibling-up', 'sort', '위로 이동')}${item('sibling-down', 'sort', '아래로 이동')}${item('subpage', 'plus', '하위 페이지 추가')}
+    <div class="menu-divider"></div>${check('toggle-full-width', 'grid', '전체 너비', page.fullWidth)}${check('toggle-small-text', 'text', '작은 글씨', page.smallText)}${isDb ? '' : item('page-history', 'clock', '페이지 기록') + item('save-template', 'template', '템플릿으로 저장')}
+    <div class="menu-divider"></div>${item('export-page', 'download', 'Markdown 내보내기')}${item('export-html', 'download', 'HTML 내보내기')}${isDb ? item('export-csv', 'download', 'CSV 내보내기') : ''}${item('print-page', 'external', '인쇄')}
+    <div class="menu-divider"></div><button class="danger" role="menuitem" data-action="delete-page" data-id="${id}">${icon('trash')}휴지통으로 이동</button>`;
   document.body.append(el); positionMenu(el, anchor);
+}
+function placeBelow(el, anchor) {
+  const r = anchor.getBoundingClientRect();
+  el.style.right = 'auto'; el.style.left = `${Math.max(8, Math.min(r.left, innerWidth - el.offsetWidth - 8))}px`;
+  el.style.top = `${Math.max(8, Math.min(r.bottom + 6, innerHeight - el.offsetHeight - 8))}px`;
+}
+const iconChoices = [['file', '문서'], ['book', '책'], ['bulb', '전구'], ['calendar', '달력'], ['check', '체크'], ['star', '별'], ['home', '집'], ['table', '표'], ['board', '보드'], ['grid', '격자'], ['user', '사람'], ['sun', '해'], ['moon', '달'], ['sparkles', '반짝임'], ['clock', '시계'], ['code', '코드'], ['quote', '인용'], ['text', '글자'], ['shield', '방패'], ['template', '템플릿']];
+const emojiChoices = ['📄', '📝', '📚', '💡', '🎯', '🚀', '✅', '📅', '🔥', '⭐', '❤️', '🌱', '🏠', '💼', '🎨', '🧠', '☕', '🎵', '✈️', '🔒'];
+function iconPicker(anchor) {
+  const now = current().icon;
+  const el = popMenu(`<div class="menu-caption">기본 아이콘</div><div class="icon-grid" role="group" aria-label="기본 아이콘">${iconChoices.map(([name, label]) => `<button data-action="set-icon" data-icon="${name}" aria-label="아이콘: ${label}" aria-pressed="${now === name}">${icon(name)}</button>`).join('')}</div><div class="menu-caption">이모지</div><div class="icon-grid" role="group" aria-label="이모지">${emojiChoices.map(e => `<button data-action="set-icon" data-icon="${e}" aria-label="이모지: ${e}" aria-pressed="${now === e}">${e}</button>`).join('')}</div><form id="emoji-form"><input name="emoji" aria-label="이모지 직접 입력" placeholder="다른 이모지 입력" maxlength="30" autocomplete="off"><button class="button small primary">적용</button></form>`, anchor, '페이지 아이콘');
+  el.classList.add('icon-menu'); placeBelow(el, anchor);
+}
+function setIcon(name) { current().icon = name; persist(); removePopovers(); render(); $('.page-icon').focus(); }
+// The first emoji of what was typed, or '' when it does not start with one.
+function firstEmoji(text) {
+  const first = [...new Intl.Segmenter().segment(text.trim())][0]?.segment || '';
+  return first.length <= 30 && /\p{Extended_Pictographic}|\p{Regional_Indicator}/u.test(first) ? first : '';
+}
+function coverPicker(anchor) {
+  const page = current();
+  const el = popMenu(`<div class="menu-caption">커버</div><div class="cover-grid" role="group" aria-label="커버 선택">${pageCovers.map(([name, label]) => `<button class="cover-swatch cover-${name}" data-action="set-cover" data-cover="${name}" aria-label="커버: ${label}" aria-pressed="${page.cover === name}"></button>`).join('')}</div>${page.cover ? `<button role="menuitem" data-action="set-cover" data-cover="">${icon('close')}커버 제거</button>` : ''}`, anchor, '페이지 커버');
+  el.classList.add('cover-menu'); placeBelow(el, anchor);
 }
 function openWorkspaceMenu(anchor) {
   removePopovers();
@@ -306,10 +386,11 @@ function openWorkspaceMenu(anchor) {
   document.body.append(el); const bounds = anchor.getBoundingClientRect(); el.style.left = `${Math.min(bounds.left, innerWidth - 300)}px`; el.style.top = `${bounds.bottom + 7}px`;
 }
 function activateWorkspace(id, name = null) {
+  flushVersions();
   if (!persist(false)) { toast('현재 공간을 저장하지 못해 전환하지 않았습니다. 먼저 백업해 주세요.', true); return; }
   try {
     const next = switchLocalWorkspace(state, id, name);
-    state = next; history.clearHistory(); lastSavedRaw = localStorage.getItem(STORAGE_KEY); persistenceBlocked = false; persist.warned = false;
+    state = next; history.clearHistory(); ui.dirty.clear(); ui.snapAt.clear(); lastSavedRaw = localStorage.getItem(STORAGE_KEY); persistenceBlocked = false; persist.warned = false;
     const prefs = sidebarSettings(state); ui.sidebarPrefs = prefs; ui.expanded = new Set(prefs.expanded); ui.collapsed = prefs.collapsed; ui.sidebar = false;
     ui.query = ''; ui.row = null;
     closeModal(false); removePopovers(); render(); toast('워크스페이스를 전환했습니다.');
@@ -347,7 +428,7 @@ function showModal(name, title, body, size = '') {
   requestAnimationFrame(() => ($('[autofocus]', $('#overlay-root')) || $('input,select,textarea,button', $('.modal-body')) || $('.modal-header button'))?.focus());
 }
 function closeModal(restore = true) {
-  $('#app').inert = false; $('#overlay-root').innerHTML = ''; ui.modal = null; ui.pendingImport = null;
+  $('#app').inert = false; $('#overlay-root').innerHTML = ''; ui.modal = null; ui.pendingImport = null; ui.linking = null; ui.confirm = null;
   const last = ui.lastFocus; if (restore) (last?.isConnected ? last : last?.dataset?.focus && focusKey(last.dataset.focus))?.focus();
 }
 function searchResults(q = '') {
@@ -373,18 +454,104 @@ function openSearch(library = false) {
   $('#search-results').innerHTML = searchResults();
 }
 function openSettings() {
-  showModal('settings', '워크스페이스 설정', `<form id="settings-form"><div class="settings-intro"><span class="brand-icon">f.</span><div><strong>나만의 공간, 나만의 방식</strong><p>집중하기 좋은 워크스페이스를 만들어 보세요.</p></div></div><label class="field-label">워크스페이스 이름<input name="name" aria-label="워크스페이스 이름" maxlength="120" required value="${esc(state.settings.name)}"></label><label class="field-label">화면 테마<select name="theme" aria-label="화면 테마"><option value="light" ${state.settings.theme === 'light' ? 'selected' : ''}>라이트 · 밝고 편안하게</option><option value="dark" ${state.settings.theme === 'dark' ? 'selected' : ''}>다크 · 차분하게 집중</option></select></label><div class="privacy-note">${icon('shield')}<div><strong>데이터는 이 브라우저에 저장됩니다.</strong><p>서버 동기화나 실시간 협업은 제공하지 않습니다. 브라우저 데이터를 지우기 전에 백업을 내려받으세요.</p></div></div><div class="backup-actions"><button type="button" class="button" data-action="export-workspace">${icon('download')}워크스페이스 내보내기</button><button type="button" class="button" data-action="import-workspace">${icon('upload')}백업 가져오기</button><input type="file" id="import-file" aria-label="백업 파일 선택" accept=".json,application/json" hidden></div><div id="import-feedback" role="alert"></div><div class="form-footer"><span></span><button type="submit" class="button primary">설정 저장</button></div></form>`);
+  showModal('settings', '워크스페이스 설정', `<form id="settings-form"><div class="settings-intro"><span class="brand-icon">f.</span><div><strong>나만의 공간, 나만의 방식</strong><p>집중하기 좋은 워크스페이스를 만들어 보세요.</p></div></div><label class="field-label">워크스페이스 이름<input name="name" aria-label="워크스페이스 이름" maxlength="120" required value="${esc(state.settings.name)}"></label><label class="field-label">화면 테마<select name="theme" aria-label="화면 테마"><option value="light" ${state.settings.theme === 'light' ? 'selected' : ''}>라이트 · 밝고 편안하게</option><option value="dark" ${state.settings.theme === 'dark' ? 'selected' : ''}>다크 · 차분하게 집중</option></select></label><div class="privacy-note">${icon('shield')}<div><strong>데이터는 이 브라우저에 저장됩니다.</strong><p>서버 동기화나 실시간 협업은 제공하지 않습니다. 브라우저 데이터를 지우기 전에 백업을 내려받으세요.</p></div></div><div class="backup-actions"><button type="button" class="button" data-action="export-workspace">${icon('download')}워크스페이스 내보내기</button><button type="button" class="button" data-action="import-workspace">${icon('upload')}백업 가져오기</button><input type="file" id="import-file" aria-label="백업 파일 선택" accept=".json,application/json" hidden></div><div class="import-files"><strong>파일 가져오기</strong><p>Markdown 파일은 새 페이지로, CSV 파일은 새 데이터베이스로 가져옵니다.</p><div class="backup-actions"><button type="button" class="button" data-action="import-md">${icon('upload')}Markdown 가져오기</button><button type="button" class="button" data-action="import-csv">${icon('upload')}CSV 가져오기</button><input type="file" id="import-md" aria-label="Markdown 파일 선택" accept=".md,.markdown,.txt,text/markdown,text/plain" hidden><input type="file" id="import-csv" aria-label="CSV 파일 선택" accept=".csv,text/csv" hidden></div></div><div id="import-feedback" role="alert"></div><div class="form-footer"><span></span><button type="submit" class="button primary">설정 저장</button></div></form>`);
 }
+// Redraws a list inside the open dialog; focus goes to the control labelled `label`.
+function refreshList(el, html, label = null) {
+  if (!el) return; el.innerHTML = html;
+  ((label && $$('[aria-label]', el).find(node => node.getAttribute('aria-label') === label)) || $('input,button', $('.modal-body')))?.focus();
+}
+function trashHTML() {
+  const all = state.pages.filter(p => p.deleted); const query = ui.trashQuery.trim().toLocaleLowerCase();
+  if (!all.length) return '<div class="empty-state">휴지통이 비어 있습니다.<small>삭제한 페이지가 여기에 표시됩니다.</small></div>';
+  const pages = all.filter(p => pageName(p).toLocaleLowerCase().includes(query)); const emptying = ui.confirm === 'empty-trash';
+  return `<div class="list-head"><span>${query ? `검색 결과 ${pages.length}개` : `삭제한 페이지 ${all.length}개`}</span><button class="button small danger" data-action="empty-trash" aria-label="${emptying ? '휴지통 비우기 확인' : '휴지통 비우기'}">${icon('trash')}${emptying ? '정말 모두 삭제' : '휴지통 비우기'}</button></div>${pages.map(p => {
+    const name = esc(pageName(p)); const sure = ui.confirm === `purge:${p.id}`;
+    return `<div class="trash-row"><span>${icon(p.icon)}${name}</span><span class="row-actions"><button class="button small" data-action="restore" data-id="${esc(p.id)}" aria-label="복원: ${name}">${icon('restore')}복원</button><button class="button small danger" data-action="purge-page" data-id="${esc(p.id)}" aria-label="${sure ? '영구 삭제 확인' : '영구 삭제'}: ${name}">${sure ? '정말 삭제' : '영구 삭제'}</button></span></div>`;
+  }).join('') || '<div class="empty-state">검색 결과가 없습니다.<small>다른 이름으로 찾아 보세요.</small></div>'}`;
+}
+const refreshTrash = (label = null) => refreshList($('#trash-list'), trashHTML(), label);
 function openTrash() {
-  const pages = state.pages.filter(p => p.deleted);
-  showModal('trash', '휴지통', `<p class="dialog-description">삭제한 페이지와 내용은 복원할 수 있습니다.</p>${pages.length ? pages.map(p => `<div class="trash-row"><span>${icon(p.icon)}${esc(pageName(p))}</span><button class="button small" data-action="restore" data-id="${esc(p.id)}" aria-label="복원: ${esc(pageName(p))}">${icon('restore')}복원</button></div>`).join('') : '<div class="empty-state">휴지통이 비어 있습니다.<small>삭제한 페이지가 여기에 표시됩니다.</small></div>'}`);
+  ui.trashQuery = '';
+  showModal('trash', '휴지통', `<p class="dialog-description">삭제한 페이지는 복원하거나 영구 삭제할 수 있습니다. 영구 삭제한 페이지는 되돌릴 수 없습니다.</p><label class="search-main list-search">${icon('search')}<input type="search" aria-label="휴지통 검색" placeholder="삭제한 페이지 검색…"></label><div id="trash-list">${trashHTML()}</div>`);
+}
+// Removes pages from the trash for good, with everything that pointed at them.
+function purge(ids) {
+  const gone = purgePages(state, ids);
+  ui.sidebarPrefs.recents = ui.sidebarPrefs.recents.filter(id => !gone.has(id));
+  for (const id of gone) { ui.expanded.delete(id); ui.dirty.delete(id); ui.snapAt.delete(id); }
+  dropVersions(workspaceId(state), gone); saveSidebar(); render(); refreshTrash();
 }
 const templates = [
   { title: '팀 회의록', label: '회의록', icon: 'calendar', description: '안건부터 결정 사항, 다음 액션까지.', blocks: () => [block('h2', '회의 안건'), block('bullet', '논의할 주제를 입력하세요.'), block('h2', '결정 사항'), block('text'), block('h2', '다음 액션'), block('todo', '담당자와 마감일 정하기')] },
   { title: '주간 계획', label: '주간 계획', icon: 'check', description: '이번 주의 목표와 작은 성취를 기록해요.', blocks: () => [block('h2', '이번 주 가장 중요한 일'), block('todo', '이번 주 목표 1'), block('todo', '이번 주 목표 2'), block('h2', '한 주 돌아보기'), block('text', '이번 주에 배운 점은 무엇인가요?')] },
   { title: '독서 노트', label: '독서 노트', icon: 'book', description: '읽은 책을 나만의 지식으로 남겨요.', blocks: () => [block('h2', '책 소개'), block('text', '책 제목과 저자를 기록하세요.'), block('h2', '마음에 남은 문장'), block('quote', '기억하고 싶은 문장을 적어 보세요.'), block('h2', '나의 생각'), block('text')] },
 ];
-function openTemplates() { showModal('templates', '작은 시작을 돕는 템플릿', `<p class="dialog-description">빈 페이지 앞에서 망설이지 않도록. 나에게 맞는 틀을 골라 보세요.</p><div class="template-grid">${templates.map((t, i) => `<button class="template-card" data-action="use-template" data-index="${i}" aria-label="${t.label} 템플릿 사용"><span class="template-preview preview-${i}">${icon(t.icon)}<i></i><i></i><i></i></span><strong>${t.label}</strong><small>${t.description}</small><span class="template-cta">템플릿 사용 ${icon('arrow')}</span></button>`).join('')}</div>`, 'wide-modal'); }
+function templatesHTML() {
+  const mine = state.templates || [];
+  return `<p class="dialog-description">빈 페이지 앞에서 망설이지 않도록. 나에게 맞는 틀을 골라 보세요.</p><div class="template-grid">${templates.map((t, i) => `<button class="template-card" data-action="use-template" data-index="${i}" aria-label="${t.label} 템플릿 사용"><span class="template-preview preview-${i}">${icon(t.icon)}<i></i><i></i><i></i></span><strong>${t.label}</strong><small>${t.description}</small><span class="template-cta">템플릿 사용 ${icon('arrow')}</span></button>`).join('')}</div>
+    <div class="list-head my-templates-head"><span>내 템플릿 ${mine.length}개</span></div>${mine.map(t => {
+    const name = esc(t.title.trim() || '제목 없음'); const sure = ui.confirm === `template:${t.id}`;
+    return `<div class="trash-row"><span>${icon(t.icon)}${name}<small>블록 ${t.blocks.length}개</small></span><span class="row-actions"><button class="button small" data-action="use-my-template" data-id="${esc(t.id)}" aria-label="내 템플릿 사용: ${name}">사용</button><button class="button small danger" data-action="delete-template" data-id="${esc(t.id)}" aria-label="${sure ? '템플릿 삭제 확인' : '템플릿 삭제'}: ${name}">${sure ? '정말 삭제' : '삭제'}</button></span></div>`;
+  }).join('') || '<p class="list-empty">페이지 메뉴의 “템플릿으로 저장”으로 자주 쓰는 페이지를 템플릿으로 만들 수 있습니다.</p>'}`;
+}
+function openTemplates() { showModal('templates', '작은 시작을 돕는 템플릿', `<div id="templates-body">${templatesHTML()}</div>`, 'wide-modal'); }
+function saveTemplate(page) {
+  state.templates ||= [];
+  if (state.templates.length >= TEMPLATE_LIMIT) { toast(`템플릿은 최대 ${TEMPLATE_LIMIT}개까지 저장할 수 있습니다.`, true); return; }
+  state.templates.push({ id: uid(), title: page.title.slice(0, 500), icon: page.icon, blocks: copyBlocks(page.blocks) });
+  persist(false); toast('템플릿으로 저장했습니다.');
+}
+// The page picker links a page from the block in `linking`: { id, cut } where `cut` is
+// the typed text ("[[" or a slash command) to remove from that block.
+function pickerHTML(q = '') {
+  const query = q.trim().toLocaleLowerCase();
+  const pages = state.pages.filter(p => !p.deleted && pageName(p).toLocaleLowerCase().includes(query)).slice(0, 50);
+  return pages.map(p => `<button class="search-result" data-action="pick-page" data-id="${esc(p.id)}" aria-label="페이지 선택: ${esc(pageName(p))}">${icon(p.icon)}<span><strong>${esc(pageName(p))}</strong><small>${p.type === 'database' ? '데이터베이스' : '페이지'}</small></span>${icon('arrow')}</button>`).join('') || '<div class="empty-state">찾는 페이지가 없습니다.<small>다른 이름으로 찾아 보세요.</small></div>';
+}
+function openPagePicker(linking) {
+  showModal('page-picker', '페이지 링크', `<label class="search-main">${icon('search')}<input type="search" aria-label="페이지 검색" placeholder="연결할 페이지 이름…" autofocus><kbd>ESC</kbd></label><div id="page-picker-results">${pickerHTML()}</div>`, 'search-modal');
+  ui.linking = linking;
+}
+function linkPage(targetId) {
+  const linking = ui.linking; closeModal(false);
+  const list = doc().blocks; const index = list.findIndex(b => b.id === linking?.id); const b = list[index]; if (!b || !livePage(targetId)) return;
+  if (list.length >= 9998) { toast('블록은 페이지당 최대 10,000개까지 만들 수 있습니다.', true); return; }
+  remember();
+  if (linking.cut) { const [from, to] = linking.cut; setMarks(b, spliceMarks(marksOf(b), from, to - from, 0)); b.text = b.text.slice(0, from) + b.text.slice(to); setMarks(b, marksOf(b)); }
+  // An empty block becomes the link; otherwise the link goes below the text.
+  let link = b;
+  if (b.text) { link = { ...block('page'), target: targetId }; if (indentOf(b)) link.indent = indentOf(b); list.splice(index + 1, 0, link); }
+  else { b.type = 'page'; b.target = targetId; b.checked = false; delete b.marks; delete b.open; }
+  const at = list.indexOf(link); let next = list[at + 1];
+  if (!next || staticTypes.includes(next.type)) { next = block(); if (indentOf(link)) next.indent = indentOf(link); list.splice(at + 1, 0, next); }
+  persist(); render(); focusBlock(next.id, 0);
+}
+const stamp = at => new Date(at).toLocaleString('ko-KR', { month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+function historyHTML(page) {
+  const list = versions(workspaceId(state), page.id); const id = esc(page.id);
+  return `<div class="list-head"><span>저장된 버전 ${list.length}개</span><button class="button small" data-action="save-version" data-id="${id}">${icon('plus')}지금 버전 저장</button></div>${list.map((v, i) => `<div class="trash-row"><span>${icon('clock')}<span class="version-name"><strong>${esc(stamp(v.at))}</strong><small>${esc(v.title.trim() || '제목 없음')} · 블록 ${v.blocks.length}개</small></span></span><button class="button small" data-action="restore-version" data-id="${id}" data-version="${esc(v.id)}" aria-label="버전 ${i + 1} 복원">${icon('restore')}복원</button></div>`).join('') || '<div class="empty-state">아직 저장된 버전이 없습니다.<small>페이지를 편집하고 다른 페이지로 이동하면 버전이 남습니다.</small></div>'}`;
+}
+function openHistory(page) {
+  if (ui.dirty.has(page.id)) keepVersion(page);
+  showModal('history', '페이지 기록', `<p class="dialog-description">페이지를 떠날 때와 편집 중 10분마다 버전을 저장합니다. 페이지마다 최근 ${KEEP}개를 이 브라우저에 보관하며, 백업 파일에는 들어가지 않습니다.</p><div id="history-list">${historyHTML(page)}</div>`);
+}
+function restoreVersion(page, versionId) {
+  const version = versions(workspaceId(state), page.id).find(v => v.id === versionId); if (!version) return;
+  let blocks; try { blocks = copyBlocks(version.blocks); } catch (error) { toast('이 버전은 읽을 수 없어 복원하지 않았습니다.', true); return; }
+  keepVersion(page); history.snapshot(page);
+  page.title = version.title; page.blocks = blocks.length ? blocks : [block()]; page.updatedAt = new Date().toISOString();
+  persist(false); closeModal(false); render(); toast('선택한 버전으로 복원했습니다.');
+}
+function importMarkdown(text, name) {
+  const { title, blocks, truncated } = markdownToPage(text, name);
+  if (addPage({ title, blocks })) toast(truncated ? '블록 10,000개까지만 가져왔습니다.' : 'Markdown 파일을 페이지로 가져왔습니다.', truncated);
+}
+function importCSV(text, name) {
+  if (Object.keys(state.databases).length >= limits.databases) throw new Error('데이터베이스는 최대 200개까지 만들 수 있습니다.');
+  const { db, truncated } = csvToDatabase(parseCSV(text)); repair(db);
+  if (addPage({ title: name, type: 'database', icon: 'table', blocks: [] }, page => { state.databases[page.id] = db; })) toast(truncated ? 'CSV 파일의 일부만 가져왔습니다. (행 5,000개, 속성 50개까지)' : `CSV 파일에서 ${db.rows.length}개 행을 가져왔습니다.`, truncated);
+}
 function download(name, content, type) { const url = URL.createObjectURL(new Blob([content], { type })); const link = document.createElement('a'); link.href = url; link.download = name.replace(/[<>:"/\\|?*]/g, '_'); link.click(); setTimeout(() => URL.revokeObjectURL(url), 2000); }
 const editable = id => $(`[data-edit-block="${id}"]`);
 function focusBlock(id, offset = null) { const el = editable(id); if (el) { el.focus(); setSelection(el, offset ?? readText(el).length); } else $(`[data-block-id="${id}"] [data-action="block-menu"]`)?.focus(); }
@@ -403,8 +570,8 @@ function insertIntoBlock(el, b, pos, text) {
 // keeping the text from offset `from` on (nothing when `from` is null).
 function convertBlock(b, type, from = null) {
   const list = doc().blocks; const marks = from === null ? [] : sliceMarks(marksOf(b), from, b.text.length);
-  b.type = type; b.text = from === null ? '' : b.text.slice(from); setMarks(b, marks); removePopovers();
-  if (type !== 'divider') { persist(); render(); focusBlock(b.id, 0); return; }
+  b.type = type; delete b.target; b.text = from === null ? '' : b.text.slice(from); setMarks(b, marks); removePopovers();
+  if (!staticTypes.includes(type)) { persist(); render(); focusBlock(b.id, 0); return; }
   const index = list.indexOf(b); let next = list[index + 1];
   if (!next || staticTypes.includes(next.type)) { next = block(); list.splice(index + 1, 0, next); }
   persist(); render(); focusBlock(next.id, 0);
@@ -434,7 +601,7 @@ document.addEventListener('click', event => {
   if (!target) { if (!event.target.closest('.popover')) removePopovers(); if (event.target.dataset.backdrop) closeModal(); return; }
   const { action, id } = target.dataset;
   if (!['block-type', 'block-menu', 'page-menu', 'block-delete', 'block-up', 'block-down', 'block-duplicate', 'toggle-option'].includes(action)) removePopovers();
-  const confirming = ui.confirmProp; ui.confirmProp = null;
+  const confirming = ui.confirmProp; ui.confirmProp = null; const armed = ui.confirm; ui.confirm = null;
   switch (action) {
     case 'open': if (state.pages.some(p => p.id === id && !p.deleted)) go(id); else toast('이 페이지는 휴지통에 있습니다.', true); break;
     case 'open-home': go(state.pages.find(p => p.type === 'home' && !p.deleted)?.id || state.pages.find(p => !p.deleted).id); break;
@@ -448,7 +615,7 @@ document.addEventListener('click', event => {
     case 'page-menu': renderPageMenu(); break;
     case 'duplicate': if (state.pages.length >= 1000) { toast('페이지는 최대 1,000개까지 만들 수 있습니다.', true); break; } duplicatePage(state, state.pages.find(p => p.id === id) || current()); persist(); render(); toast('페이지를 복제했습니다.'); break;
     case 'delete-page': trashPage(state, id || current().id); persist(); render(); toast('페이지를 휴지통으로 옮겼습니다.'); break;
-    case 'restore': restorePage(state, id); persist(); render(); openTrash(); toast('페이지를 복원했습니다.'); break;
+    case 'restore': restorePage(state, id); persist(); render(); refreshTrash(); toast('페이지를 복원했습니다.'); break;
     case 'search': openSearch(); break;
     case 'library': openSearch(true); break;
     case 'search-open': closeModal(false); go(id); break;
@@ -456,6 +623,26 @@ document.addEventListener('click', event => {
     case 'use-template': { const t = templates[Number(target.dataset.index)]; addPage({ title: t.title, icon: t.icon, blocks: t.blocks() }); toast('템플릿으로 페이지를 만들었습니다.'); break; }
     case 'settings': openSettings(); break;
     case 'trash': openTrash(); break;
+    case 'purge-page': { const page = state.pages.find(p => p.id === id && p.deleted); if (!page) break; if (armed !== `purge:${id}`) { ui.confirm = `purge:${id}`; refreshTrash(`영구 삭제 확인: ${pageName(page)}`); break; } purge([id]); toast('페이지를 영구 삭제했습니다.'); break; }
+    case 'empty-trash': { if (armed !== 'empty-trash') { ui.confirm = 'empty-trash'; refreshTrash('휴지통 비우기 확인'); break; } purge(state.pages.filter(p => p.deleted).map(p => p.id)); toast('휴지통을 비웠습니다.'); break; }
+    case 'use-my-template': { const t = state.templates?.find(t => t.id === id); if (!t) break; const blocks = copyBlocks(t.blocks); if (addPage({ title: t.title, icon: t.icon, blocks: blocks.length ? blocks : [block()] })) toast('템플릿으로 페이지를 만들었습니다.'); break; }
+    case 'delete-template': { const t = state.templates?.find(t => t.id === id); if (!t) break; const name = t.title.trim() || '제목 없음'; if (armed !== `template:${id}`) { ui.confirm = `template:${id}`; refreshList($('#templates-body'), templatesHTML(), `템플릿 삭제 확인: ${name}`); break; } state.templates = state.templates.filter(item => item !== t); persist(false); refreshList($('#templates-body'), templatesHTML()); toast('템플릿을 삭제했습니다.'); break; }
+    case 'save-template': saveTemplate(state.pages.find(p => p.id === id) || current()); break;
+    case 'icon-picker': iconPicker(target); break;
+    case 'set-icon': setIcon(target.dataset.icon); break;
+    case 'cover-picker': coverPicker(target); break;
+    case 'set-cover': { const page = current(); if (pageCovers.some(([name]) => name === target.dataset.cover)) page.cover = target.dataset.cover; else delete page.cover; persist(); render(); $('[data-action="cover-picker"]').focus(); break; }
+    case 'toggle-full-width': case 'toggle-small-text': { const page = state.pages.find(p => p.id === id) || current(); const key = action === 'toggle-full-width' ? 'fullWidth' : 'smallText'; if (page[key]) delete page[key]; else page[key] = true; persist(false); render(); break; }
+    case 'page-history': openHistory(state.pages.find(p => p.id === id) || current()); break;
+    case 'save-version': { const page = state.pages.find(p => p.id === id); if (!page) break; keepVersion(page, true); refreshList($('#history-list'), historyHTML(page)); break; }
+    case 'restore-version': { const page = state.pages.find(p => p.id === id); if (page) restoreVersion(page, target.dataset.version); break; }
+    case 'pick-page': linkPage(id); break;
+    case 'toc-jump': focusBlock(id, 0); $(`[data-block-id="${id}"]`)?.scrollIntoView({ block: 'start' }); break;
+    case 'export-html': { const page = state.pages.find(p => p.id === id) || current(); download(`${pageName(page)}.html`, exportHTML(page, { titleOf, db: state.databases[page.id] || null }), 'text/html;charset=utf-8'); toast('페이지를 HTML로 내보냈습니다.'); break; }
+    case 'export-csv': { const page = state.pages.find(p => p.id === id) || current(); const db = state.databases[page.id]; if (!db) break; download(`${pageName(page)}.csv`, databaseCSV(db), 'text/csv;charset=utf-8'); toast('데이터베이스를 CSV로 내보냈습니다.'); break; }
+    case 'print-page': if (id && id !== current().id && livePage(id)) go(id); window.print(); break;
+    case 'import-md': $('#import-md').click(); break;
+    case 'import-csv': $('#import-csv').click(); break;
     case 'close-modal': closeModal(); break;
     case 'db-view': { const db = shownDb(); if (db?.views.some(v => v.id === target.dataset.view)) { db.activeViewId = target.dataset.view; persist(false); renderDatabase(); } break; }
     case 'add-view': viewMenu(target); break;
@@ -487,15 +674,15 @@ document.addEventListener('click', event => {
     case 'option-add': addOption(id); break;
     case 'option-delete': { const db = shownDb(); const prop = db.properties.find(p => p.id === id); if (!prop?.options) break; prop.options.splice(Number(target.dataset.index), 1); repair(db); persist(); refreshPanel(`${prop.name} 새 옵션`); break; }
     case 'view-delete': { const db = shownDb(); if (db.views.length < 2) break; db.views = db.views.filter(v => v !== activeView(db)); db.activeViewId = db.views[0].id; persist(); renderDatabase(); refreshSidebar(); closeModal(); toast('보기를 삭제했습니다.'); break; }
-    case 'export-page': { const row = !id && openRow(); const page = state.pages.find(p => p.id === id) || current(); download(`${row ? rowName(row) : pageName(page)}.md`, pageMarkdown(row || page), 'text/markdown;charset=utf-8'); toast('페이지를 Markdown으로 내보냈습니다.'); break; }
+    case 'export-page': { const row = !id && openRow(); const page = state.pages.find(p => p.id === id) || current(); download(`${row ? rowName(row) : pageName(page)}.md`, pageMarkdown(row || page, titleOf), 'text/markdown;charset=utf-8'); toast('페이지를 Markdown으로 내보냈습니다.'); break; }
     case 'export-workspace': download('folio-workspace-backup.json', JSON.stringify(state, null, 2), 'application/json'); toast('백업 파일을 내보냈습니다.'); break;
     case 'import-workspace': $('#import-file').click(); break;
-    case 'confirm-import': if (ui.pendingImport) { state = { ...ui.pendingImport, workspaceId: workspaceId(state) }; history.clearHistory(); ui.query = ''; ui.row = null; ui.sidebarPrefs = sidebarSettings(state); ui.expanded = new Set(ui.sidebarPrefs.expanded); ui.collapsed = ui.sidebarPrefs.collapsed; persistenceBlocked = false; lastSavedRaw = localStorage.getItem(STORAGE_KEY); persist.warned = false; persist(); closeModal(false); render(); toast('백업을 가져왔습니다.'); } break;
+    case 'confirm-import': if (ui.pendingImport) { state = { ...ui.pendingImport, workspaceId: workspaceId(state) }; history.clearHistory(); dropVersions(workspaceId(state)); ui.dirty.clear(); ui.snapAt.clear(); ui.query = ''; ui.row = null; ui.sidebarPrefs = sidebarSettings(state); ui.expanded = new Set(ui.sidebarPrefs.expanded); ui.collapsed = ui.sidebarPrefs.collapsed; persistenceBlocked = false; lastSavedRaw = localStorage.getItem(STORAGE_KEY); persist.warned = false; persist(); closeModal(false); render(); toast('백업을 가져왔습니다.'); } break;
     case 'cancel-import': ui.pendingImport = null; $('#import-feedback').innerHTML = ''; break;
     case 'append-block': { remember(); const b = block(); doc().blocks.push(b); persist(); render(); focusBlock(b.id); break; }
     case 'add-block': { remember(); const list = doc().blocks; const index = list.findIndex(b => b.id === id); const b = block(); if (indentOf(list[index])) b.indent = indentOf(list[index]); list.splice(subtreeEnd(list, index), 0, b); persist(); render(); focusBlock(b.id); break; }
     case 'block-menu': renderBlockMenu(id); break;
-    case 'block-type': { const b = doc().blocks.find(b => b.id === id); remember(); if (target.dataset.type === 'database') { b.text = ''; delete b.marks; removePopovers(); persist(); if (!addDatabase(current().id)) { render(); focusBlock(id); } break; } if (ui.slash) { convertBlock(b, target.dataset.type); break; } b.type = target.dataset.type; if (b.text === '/') b.text = ''; setMarks(b, marksOf(b)); removePopovers(); persist(); render(); focusBlock(id); break; }
+    case 'block-type': { const b = doc().blocks.find(b => b.id === id); const type = target.dataset.type; if (type === 'page') { openPagePicker({ id, cut: ui.slash || b.text === '/' ? [0, b.text.length] : null }); break; } remember(); if (type === 'database') { b.text = ''; delete b.marks; removePopovers(); persist(); if (!addDatabase(current().id)) { render(); focusBlock(id); } break; } if (ui.slash) { convertBlock(b, type); break; } b.type = type; delete b.target; if (b.text === '/') b.text = ''; setMarks(b, marksOf(b)); removePopovers(); persist(); render(); focusBlock(id); break; }
     case 'block-duplicate': duplicateBlock(id); break;
     case 'format': applyMark(target.dataset.type); break;
     case 'format-panel': ui.format.panel = ui.format.panel === target.dataset.panel ? null : target.dataset.panel; renderFormatBar(); if (ui.format.panel === 'link') $('#format-bar input').focus(); break;
@@ -527,6 +714,8 @@ document.addEventListener('input', event => {
   if (el.id === 'page-title') { current().title = el.value; persist(); updateTitleUI(); if (current().type === 'database') { $('.db-table')?.setAttribute('aria-label', `${pageName(current())} 데이터베이스`); $('#database').setAttribute('aria-label', `${pageName(current())} 관리`); } }
   if (el.dataset.editBlock) onBlockInput(el, event);
   if (el.getAttribute('aria-label') === '워크스페이스 검색') { ui.searchQuery = el.value; $('#search-results').innerHTML = searchResults(el.value); }
+  if (el.getAttribute('aria-label') === '페이지 검색') $('#page-picker-results').innerHTML = pickerHTML(el.value);
+  if (el.getAttribute('aria-label') === '휴지통 검색') { ui.trashQuery = el.value; $('#trash-list').innerHTML = trashHTML(); }
   if (el.id === 'row-title') { const row = openRow(); if (row) { relabel($('#row-props'), rowName(row), el.value.trim() || '제목 없음'); row.title = el.value; persist(); $('#row-crumb').textContent = rowName(row); document.title = `${rowName(row)} — Folio`; } }
   if (el.getAttribute('aria-label') === '데이터베이스 검색') { ui.query = el.value; refreshDatabaseResults(); }
   if (el.dataset.cell) { const t = cellTarget(el); if (t && ['text', 'url', 'number'].includes(t.prop.type)) { t.row.values[t.prop.id] = cleanValue(t.prop, el.value); persist(); ui.staleCells = true; refreshTotals(); } }
@@ -541,6 +730,14 @@ document.addEventListener('change', async event => {
   if (el.dataset.total) { const db = shownDb(); const prop = db?.properties.find(p => p.id === el.dataset.total); if (prop) { const view = activeView(db); if (el.value !== 'none' && calcsFor(prop).some(([name]) => name === el.value)) view.totals[prop.id] = el.value; else delete view.totals[prop.id]; persist(false); refreshDatabaseResults(); } }
   if (el.dataset.cell) { const t = cellTarget(el); if (t && ['select', 'date', 'checkbox'].includes(t.prop.type)) { t.row.values[t.prop.id] = cleanValue(t.prop, t.prop.type === 'checkbox' ? el.checked : el.value); persist(); refreshDatabaseResults(); } }
   if (ui.modal === 'db-panel' && el.closest('#db-panel')) onPanelChange(el);
+  if ((el.id === 'import-md' || el.id === 'import-csv') && el.files[0]) {
+    const file = el.files[0]; const kind = el.id; el.value = '';
+    try {
+      if (file.size > MAX_IMPORT_SIZE) throw new Error('2MB 이하의 파일을 선택해 주세요.');
+      const name = file.name.replace(/\.[^.]+$/, '').trim().slice(0, 500) || '가져온 페이지';
+      if (kind === 'import-md') importMarkdown(await file.text(), name); else importCSV(await file.text(), name);
+    } catch (error) { if ($('#import-feedback')) $('#import-feedback').textContent = error.message || '파일을 읽을 수 없습니다.'; }
+  }
   if (el.id === 'import-file' && el.files[0]) {
     try { if (el.files[0].size > 5_000_000) throw new Error('5MB 이하의 파일을 선택해 주세요.'); ui.pendingImport = validateWorkspace(JSON.parse(await el.files[0].text())); $('#import-feedback').innerHTML = `<div class="import-confirm"><p>현재 워크스페이스를 백업의 페이지 ${ui.pendingImport.pages.length}개로 교체합니다. 먼저 현재 데이터를 내보내는 것을 권장합니다.</p><button type="button" class="button danger" data-action="confirm-import">백업으로 교체</button><button type="button" class="button" data-action="cancel-import">가져오기 취소</button></div>`; }
     catch (error) { ui.pendingImport = null; $('#import-feedback').textContent = error.message || '백업을 읽을 수 없습니다.'; }
@@ -572,13 +769,14 @@ document.addEventListener('submit', event => {
   if (form.id === 'move-form') { try { const parent = data.get('parent') || null; movePage(state, form.dataset.pageId, parent); if (parent) ui.expanded.add(parent); saveSidebar(); closeModal(false); render(); toast('페이지를 이동했습니다.'); } catch (error) { toast(error.message, true); } }
   if (form.id === 'rename-form') { const page = state.pages.find(p => p.id === form.dataset.pageId); page.title = String(data.get('title')).trim().slice(0, 500) || '제목 없음'; page.updatedAt = new Date().toISOString(); persist(false); closeModal(false); render(); }
   if (form.id === 'link-form') { const href = safeHref(data.get('href')); if (!href) { toast('http, https, mailto 주소만 연결할 수 있습니다.', true); return; } applyMark('link', href, ui.format); }
+  if (form.id === 'emoji-form') { const emoji = firstEmoji(String(data.get('emoji'))); if (!emoji) { toast('이모지 하나를 입력해 주세요.', true); $('input', form).focus(); return; } setIcon(emoji); }
   if (form.id === 'workspace-form') activateWorkspace(null, String(data.get('name')));
 });
 document.addEventListener('keydown', event => {
   if ((event.ctrlKey || event.metaKey) && event.code === 'Backslash') { event.preventDefault(); if (innerWidth <= 760) ui.sidebar = !ui.sidebar; else ui.collapsed = !ui.collapsed; saveSidebar(); render(); return; }
   if (event.target.matches('.sidebar-resizer') && ['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) { event.preventDefault(); const width = event.key === 'Home' ? 220 : event.key === 'End' ? 420 : ui.sidebarPrefs.width + (event.key === 'ArrowRight' ? 10 : -10); ui.sidebarPrefs.width = Math.min(420, Math.max(220, width)); saveSidebar(); render(); $('.sidebar-resizer').focus(); return; }
   const menu = event.target.closest('.popover');
-  if (menu && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) { event.preventDefault(); const items = $$('button:not([disabled]),a[href]', menu); const i = items.indexOf(document.activeElement); const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (i + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length; items[next]?.focus(); return; }
+  if (menu && !event.target.matches('input') && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) { event.preventDefault(); const items = $$('button:not([disabled]),a[href]', menu); const i = items.indexOf(document.activeElement); const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (i + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length; items[next]?.focus(); return; }
 
   if ((event.ctrlKey || event.metaKey) && !event.altKey && ['z', 'y'].includes(event.key.toLowerCase()) && !ui.modal && !event.target.matches('input,textarea,select') && (current().type !== 'database' || openRow())) { event.preventDefault(); undoRedo(event.shiftKey || event.key.toLowerCase() === 'y'); return; }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); if (!openLinkEditor()) openSearch(); return; }
@@ -606,9 +804,12 @@ function onBlockInput(el, event) {
   if (text.length > MAX_TEXT) setBlockContent(el, b, MAX_TEXT);
   else if (!text && el.firstChild) el.replaceChildren();
   persist();
+  if (/^h[123]$/.test(b.type)) refreshToc();
   if (event.isComposing) return;
   dropUsedHold(el);
   if (applyShortcut(b, el, event) || applyInlineShortcut(b, el, event)) return;
+  // Typing "[[" opens the page picker to link a page.
+  if (b.type !== 'code' && event.inputType === 'insertText' && event.data === '[') { const pos = selectionOffsets(el); if (pos && pos.start === pos.end && b.text.slice(pos.start - 2, pos.start) === '[[') { openPagePicker({ id: b.id, cut: [pos.start - 2, pos.start] }); return; } }
   const slash = /^\/(\S{0,30})$/.exec(b.text);
   if (b.text === '/') renderBlockMenu(b.id, { query: '', active: 0 });
   else if (ui.blockMenu === b.id && ui.slash && slash) renderBlockMenu(b.id, { query: slash[1], active: 0 });
@@ -840,5 +1041,6 @@ document.addEventListener('drop', event => {
   } catch (error) { toast(error.message, true); }
 });
 document.addEventListener('dragend', () => { ui.draggedPage = null; clearPageDropHighlights(); document.documentElement.classList.remove('dragging-page'); });
+window.addEventListener('pagehide', flushVersions);
 render();
 if (startupError) toast(startupError, true);
