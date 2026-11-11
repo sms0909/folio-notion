@@ -1,11 +1,12 @@
 import { sidebarHTML, sidebarSettings } from './sidebar-view.js';
 import { listWorkspaces, switchLocalWorkspace, workspaceId } from './workspaces.js';
-import { databaseHTML as renderDatabaseHTML, databaseResults, filteredTasks } from './database-view.js';
+import { databaseHTML as renderDatabaseHTML, databaseResults, countText, totalText, rowFormHTML, rowPropsHTML, filterPanelHTML, sortPanelHTML, propsPanelHTML, viewPanelHTML, josa, rowName } from './database-view.js';
+import { limits, propertyTypes, viewTypes, optionColors, propOf, operators, activeView, quickFilterProp, groupProp, dateProp, cleanValue, valueOf, rowText, makeRow, addView, makeDatabase, visibleRows, isSorted, calcsFor, total, shiftMonth, changeType, repair, renameOption } from './database-model.js';
 import { icon } from './icons.js';
 import { HOLD, MAX_TEXT, listTypes, staticTypes, markdownShortcut, indentOf, numbering, hiddenBlocks, subtreeEnd, shiftIndent, slashMatches, readText, selectionOffsets, setSelection, caretOnEdge } from './blocks.js';
 import * as history from './history.js';
 import { colors, safeHref, normalizeMarks, toggleMark, covers, marksAt, marksIn, sliceMarks, shiftMarks, spliceMarks, renderInline, readInline, nodeMarks, inlineShortcut } from './richtext.js';
-import { block, uid, statuses, priorities, blockTypes, loadWorkspace, initialWorkspace, saveWorkspace, STORAGE_KEY, createPage, duplicatePage, trashPage, restorePage, descendants, movePage, validateWorkspace, pageMarkdown } from './store.js';
+import { block, uid, blockTypes, loadWorkspace, initialWorkspace, saveWorkspace, STORAGE_KEY, createPage, duplicatePage, trashPage, restorePage, descendants, movePage, validateWorkspace, pageMarkdown } from './store.js';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -15,10 +16,20 @@ try { state = loadWorkspace(); } catch { state = initialWorkspace(); startupErro
 let persistenceBlocked = !!startupError;
 let lastSavedRaw = null;
 try { lastSavedRaw = localStorage.getItem(STORAGE_KEY); } catch {}
-const savedDatabase = state.settings.database || {};
 const savedSidebar = sidebarSettings(state);
-const ui = { sidebar: false, collapsed: savedSidebar.collapsed, sidebarPrefs: savedSidebar, searchScope: 'all', searchSort: 'recent', searchQuery: '', draggedPage: null, view: savedDatabase.view === 'board' ? 'board' : 'table', query: '', status: statuses.includes(savedDatabase.status) ? savedDatabase.status : '', sort: ['asc', 'desc'].includes(savedDatabase.sort) ? savedDatabase.sort : 'none', menu: null, blockMenu: null, modal: null, expanded: new Set(savedSidebar.expanded), lastFocus: null, pendingImport: null, draggedTask: null, draggedBlock: null };
+const thisMonth = () => { const now = new Date(); return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`; };
+// `row` is `{ db, id }` while a database row is open as a page; `query` and `month` belong to the database on screen.
+const ui = { sidebar: false, collapsed: savedSidebar.collapsed, sidebarPrefs: savedSidebar, searchScope: 'all', searchSort: 'recent', searchQuery: '', draggedPage: null, query: '', row: null, month: thisMonth(), panel: null, confirmProp: null, staleCells: false, menu: null, blockMenu: null, modal: null, expanded: new Set(savedSidebar.expanded), lastFocus: null, pendingImport: null, draggedRow: null, draggedBlock: null };
 const current = () => state.pages.find(p => p.id === state.activeId && !p.deleted) || state.pages.find(p => !p.deleted);
+const dbPage = id => state.pages.find(p => p.id === id);
+// The home page shows the project tracker (or, without one, the first database).
+function homeDbId() { const live = state.pages.filter(p => p.type === 'database' && !p.deleted); return (live.find(p => p.id === 'projects') || live[0])?.id || null; }
+const shownDbId = () => current().type === 'database' ? current().id : current().type === 'home' ? homeDbId() : null;
+const shownDb = () => state.databases[shownDbId()] || null;
+const openRow = () => ui.row && current().id === ui.row.db ? state.databases[ui.row.db]?.rows.find(r => r.id === ui.row.id) || null : null;
+const activeDb = () => openRow() ? state.databases[ui.row.db] : shownDb();
+// What the block editor edits: the open row, or else the current page.
+const doc = () => openRow() || current();
 const pageName = page => page.title.trim() || '제목 없음';
 const formatDate = value => value ? `${Number(value.slice(5, 7))}월 ${Number(value.slice(8, 10))}일` : '날짜 없음';
 function toast(message, error = false) {
@@ -39,8 +50,9 @@ function saveSidebar() {
 function rememberPage(id) {
   ui.sidebarPrefs.recents = [id, ...ui.sidebarPrefs.recents.filter(item => item !== id)].slice(0, 20);
 }
-function go(id) { state.activeId = id; rememberPage(id); ui.sidebar = false; ui.menu = null; ui.blockMenu = null; saveSidebar(); render(); $('.main-scroll').scrollTop = 0; }
-function addPage(options = {}) { if (state.pages.length >= 1000) { toast('페이지는 최대 1,000개까지 만들 수 있습니다.', true); return; } const page = createPage(state, options); if (page.parentId) ui.expanded.add(page.parentId); ui.sidebarPrefs.closed.pages = false; rememberPage(page.id); persist(); saveSidebar(); ui.sidebar = false; closeModal(false); render(); $('#page-title').focus(); $('#page-title').select(); }
+function go(id) { state.activeId = id; rememberPage(id); ui.sidebar = false; ui.menu = null; ui.blockMenu = null; ui.row = null; ui.query = ''; saveSidebar(); render(); $('.main-scroll').scrollTop = 0; }
+// `setup` runs on the new page before it is saved, for pages that need more than blocks.
+function addPage(options = {}, setup = null) { if (state.pages.length >= 1000) { toast('페이지는 최대 1,000개까지 만들 수 있습니다.', true); return false; } const page = createPage(state, options); setup?.(page); if (page.parentId) ui.expanded.add(page.parentId); ui.sidebarPrefs.closed.pages = false; ui.row = null; ui.query = ''; rememberPage(page.id); persist(); saveSidebar(); ui.sidebar = false; closeModal(false); render(); $('#page-title').focus(); $('#page-title').select(); return true; }
 function sidebar() { return sidebarHTML(state, ui); }
 function breadcrumb(page) {
   const chain = []; let cursor = page; const seen = new Set();
@@ -68,41 +80,196 @@ function quickLinks() {
   return `<div class="quick-links"><button data-action="open" data-id="wiki" class="quick-card"><span class="card-icon sage">${icon('book')}</span><span><strong>팀 위키</strong><small>함께 쌓아가는 지식</small></span>${icon('arrow')}</button><button data-action="open" data-id="ideas" class="quick-card"><span class="card-icon peach">${icon('bulb')}</span><span><strong>아이디어 노트</strong><small>떠오르는 생각을 놓치지 않도록</small></span>${icon('arrow')}</button></div>`;
 }
 function render() {
-  const page = current(); state.activeId = page.id;
+  const page = current(); state.activeId = page.id; const row = openRow(); if (!row) ui.row = null;
+  const db = row && state.databases[page.id]; const shown = row ? null : shownDbId();
   document.documentElement.style.setProperty('--sidebar-width', `${ui.sidebarPrefs.width}px`);
   document.documentElement.dataset.theme = state.settings.theme;
-  document.title = `${pageName(page)} — Folio`;
-  $('#app').innerHTML = `${sidebar()}${ui.sidebar ? '<div class="mobile-scrim" data-action="close-sidebar"></div>' : ''}<main class="main-shell ${ui.collapsed ? 'expanded-main' : ''}">
-    <header class="topbar"><div class="topbar-left"><button class="icon-button sidebar-open" data-action="open-sidebar" aria-label="사이드바 열기">${icon('menu')}</button><div class="breadcrumbs">${breadcrumb(page)}</div></div><div class="topbar-right"><span id="save-state" class="save-state">${icon('check')}<span>저장됨</span></span><button class="icon-button favorite-toggle ${page.favorite ? 'is-favorite' : ''}" data-action="favorite" aria-label="${page.favorite ? '즐겨찾기 해제' : '즐겨찾기 추가'}">${icon('star')}</button><button class="button export-button" data-action="export-page">${icon('download')}내보내기</button><button class="icon-button" data-action="page-menu" aria-label="페이지 더보기">${icon('more')}</button></div></header>
-    <div class="main-scroll">${page.type === 'home' ? '<div class="cover"><img src="/cover.svg" alt="햇살과 올리브 나무가 있는 추상 풍경"><span>ROOM FOR YOUR NEXT BIG IDEA.</span><span class="cover-label">YOUR PERSONAL SPACE</span></div>' : '<div class="page-spacer"></div>'}
+  document.title = `${row ? rowName(row) : pageName(page)} — Folio`;
+  const footer = `<footer class="page-footer"><span class="footer-logo">f.</span><span>조금 더 정리된 생각, 조금 더 가벼운 하루.</span><span class="footer-shortcut">${icon('shield')}로컬 자동 저장</span></footer>`;
+  const content = row ? `<div class="page-spacer"></div><article class="page-content row-page"><button class="row-back" data-action="close-row" aria-label="데이터베이스로 돌아가기">${icon('arrow')}<span>${esc(pageName(page))}</span></button><div class="page-icon">${icon('file')}</div><div class="page-title-line"><input id="row-title" aria-label="${esc(db.itemName)} 제목" value="${esc(row.title)}" maxlength="500" placeholder="제목 없음" spellcheck="false"></div><div id="row-props" class="row-props" role="group" aria-label="${esc(db.itemName)} 속성">${rowPropsHTML(db, row)}</div>
+    ${editor(row)}<div class="document-bottom"><button class="button danger" data-action="delete-row" data-id="${esc(row.id)}">${icon('trash')}${esc(db.itemName)} 삭제</button><span>${esc(pageName(page))}의 ${esc(db.itemName)}</span></div>${footer}</article>`
+    : `${page.type === 'home' ? '<div class="cover"><img src="/cover.svg" alt="햇살과 올리브 나무가 있는 추상 풍경"><span>ROOM FOR YOUR NEXT BIG IDEA.</span><span class="cover-label">YOUR PERSONAL SPACE</span></div>' : '<div class="page-spacer"></div>'}
     <article class="page-content ${page.type === 'home' ? 'with-cover' : ''}"><div class="page-icon ${page.type === 'home' ? 'home-page-icon' : ''}">${icon(page.icon)}</div><div class="page-title-line"><input id="page-title" aria-label="페이지 제목" value="${esc(page.title)}" maxlength="500" placeholder="제목 없음" spellcheck="false"></div><div class="page-meta"><span>${icon('clock')}나만의 속도로, 매일 조금씩</span><span class="meta-dot">·</span><span>개인 페이지</span></div>
-    ${page.type !== 'database' ? editor(page) : ''}${page.type === 'home' ? quickLinks() : ''}${page.type === 'database' || page.type === 'home' ? '<section id="database" class="database" aria-label="프로젝트 관리"></section>' : ''}
-    ${page.type === 'document' ? `<div class="document-bottom"><button class="button" data-action="subpage" data-id="${esc(page.id)}">${icon('plus')}하위 페이지 추가</button><span>기록은 생각을 선명하게 만듭니다.</span></div>` : ''}<footer class="page-footer"><span class="footer-logo">f.</span><span>조금 더 정리된 생각, 조금 더 가벼운 하루.</span><span class="footer-shortcut">${icon('shield')}로컬 자동 저장</span></footer></article></div></main>`;
+    ${page.type !== 'database' ? editor(page) : ''}${page.type === 'home' ? quickLinks() : ''}${shown ? `<section id="database" class="database" aria-label="${esc(pageName(dbPage(shown)))} 관리"></section>` : ''}
+    ${page.type === 'document' ? `<div class="document-bottom"><span class="document-buttons"><button class="button" data-action="subpage" data-id="${esc(page.id)}">${icon('plus')}하위 페이지 추가</button><button class="button" data-action="new-database" data-id="${esc(page.id)}">${icon('table')}데이터베이스 추가</button></span><span>기록은 생각을 선명하게 만듭니다.</span></div>` : ''}${footer}</article>`;
+  $('#app').innerHTML = `${sidebar()}${ui.sidebar ? '<div class="mobile-scrim" data-action="close-sidebar"></div>' : ''}<main class="main-shell ${ui.collapsed ? 'expanded-main' : ''}">
+    <header class="topbar"><div class="topbar-left"><button class="icon-button sidebar-open" data-action="open-sidebar" aria-label="사이드바 열기">${icon('menu')}</button><div class="breadcrumbs">${breadcrumb(page)}${row ? `<span class="crumb-sep">/</span><span class="crumb crumb-current">${icon('file')}<span id="row-crumb">${esc(rowName(row))}</span></span>` : ''}</div></div><div class="topbar-right"><span id="save-state" class="save-state">${icon('check')}<span>저장됨</span></span>${row ? '' : `<button class="icon-button favorite-toggle ${page.favorite ? 'is-favorite' : ''}" data-action="favorite" aria-label="${page.favorite ? '즐겨찾기 해제' : '즐겨찾기 추가'}">${icon('star')}</button>`}<button class="button export-button" data-action="export-page">${icon('download')}내보내기</button>${row ? '' : `<button class="icon-button" data-action="page-menu" aria-label="페이지 더보기">${icon('more')}</button>`}</div></header>
+    <div class="main-scroll">${content}</div></main>`;
   renderDatabase(); if (ui.menu) renderPageMenu(); if (ui.blockMenu) renderBlockMenu(ui.blockMenu);
   if (persistenceBlocked || persist.warned) $('#save-state').innerHTML = '<span class="save-error">저장 안 됨 · 백업 필요</span>';
 }
-function renderDatabase() { if ($('#database')) $('#database').innerHTML = renderDatabaseHTML(state.tasks, ui, !persistenceBlocked && !persist.warned); }
+const dbContext = () => ({ query: ui.query, month: ui.month, saved: !persistenceBlocked && !persist.warned, heading: shownDbId() === 'projects' });
+const pageRef = id => ({ id, title: pageName(dbPage(id)) });
+const focusKey = key => $$('[data-focus]').find(el => el.dataset.focus === key);
+// Redrawing replaces the controls inside `root`; focus returns to the control with the same `data-focus` key.
+function keepFocus(root, redraw) {
+  const active = document.activeElement; const key = root.contains(active) ? active.dataset.focus : null;
+  const caret = key && active.matches('input:not([type])') ? [active.selectionStart, active.selectionEnd] : null;
+  redraw();
+  const next = key && $$('[data-focus]', root).find(el => el.dataset.focus === key); if (!next) return;
+  next.focus(); if (caret) next.setSelectionRange(...caret);
+}
+function renderDatabase() {
+  const id = shownDbId(); const db = state.databases[id]; const el = $('#database'); if (!el || !db) return;
+  keepFocus(el, () => { el.innerHTML = renderDatabaseHTML(db, pageRef(id), dbContext()); });
+}
+// Redraws the rows only (or the properties of the open row), leaving the toolbar and its search box alone.
 function refreshDatabaseResults() {
-  if (!$('#database-results')) return;
-  const active = document.activeElement;
-  const field = active?.dataset.taskField;
-  const taskId = active?.dataset.id;
-  $('#database-results').innerHTML = databaseResults(state.tasks, ui);
-  if (field && taskId) $$('[data-task-field]', $('#database-results')).find(el => el.dataset.taskField === field && el.dataset.id === taskId)?.focus();
+  ui.staleCells = false;
+  const row = openRow();
+  if (row) { const el = $('#row-props'); keepFocus(el, () => { el.innerHTML = rowPropsHTML(state.databases[ui.row.db], row); }); return; }
+  const id = shownDbId(); const db = state.databases[id]; const el = $('#database-results'); if (!el || !db) return;
+  keepFocus(el, () => { el.innerHTML = databaseResults(db, pageRef(id), dbContext()); });
   refreshDatabaseSummary();
   const clear = $('[data-action="clear-db-search"]'); if (clear) clear.hidden = !ui.query;
 }
 function refreshDatabaseSummary() {
-  if ($('#database-count')) $('#database-count').textContent = `${filteredTasks(state.tasks, ui).length}개의 작업${ui.status || ui.query.trim() ? ` · 전체 ${state.tasks.length}개` : ''}`;
-  if ($('.database-total')) $('.database-total').textContent = `전체 ${state.tasks.filter(t => t.status === '완료').length} / ${state.tasks.length} 완료`;
+  const db = shownDb(); if (!db) return;
+  if ($('#database-count')) $('#database-count').textContent = countText(db, ui.query);
+  if ($('.database-total')) $('.database-total').textContent = totalText(db);
   if ($('#database-save-state')) $('#database-save-state').textContent = persistenceBlocked || persist.warned ? '저장 안 됨 · 백업 필요' : '모든 변경 사항 저장됨';
 }
-function saveDatabasePrefs() { state.settings.database = { view: ui.view, status: ui.status, sort: ui.sort }; persist(); }
-function applyDatabasePrefs() {
-  const db = state.settings.database || {};
-  ui.view = db.view === 'board' ? 'board' : 'table'; ui.query = '';
-  ui.status = statuses.includes(db.status) ? db.status : '';
-  ui.sort = ['asc', 'desc'].includes(db.sort) ? db.sort : 'none';
+// While a cell is being typed in, only the numbers under the table follow along.
+function refreshTotals() {
+  const db = shownDb(); if (!db || openRow()) return;
+  const view = activeView(db); const rows = visibleRows(db, view, ui.query);
+  for (const p of db.properties) { const out = $(`[data-testid="total-${p.id}"]`); if (out) out.textContent = total(p, rows, view.totals[p.id]); }
+  refreshDatabaseSummary();
+}
+function cellTarget(el) {
+  const db = activeDb(); const row = db?.rows.find(r => r.id === el.dataset.id); const prop = db?.properties.find(p => p.id === el.dataset.cell);
+  return row && prop ? { db, row, prop } : null;
+}
+// Labels start with the name of the thing they belong to; a rename updates them without a redraw.
+function relabel(root, from, to) {
+  for (const el of $$('[aria-label]', root)) { const label = el.getAttribute('aria-label'); if (label.startsWith(`${from} `)) el.setAttribute('aria-label', `${to} ${label.slice(from.length + 1)}`); }
+}
+function popMenu(html, anchor, label = '') {
+  removePopovers(); const el = document.createElement('div'); el.className = 'popover page-menu'; el.setAttribute('role', 'menu'); if (label) el.setAttribute('aria-label', label);
+  el.innerHTML = html; document.body.append(el); positionMenu(el, anchor); $('button', el)?.focus(); return el;
+}
+function optionMenu(anchor) {
+  const t = cellTarget(anchor); if (!t) return; const value = valueOf(t.row, t.prop);
+  popMenu(`<div class="menu-caption">${esc(t.prop.name)}</div>${t.prop.options.map(o => `<button role="menuitemcheckbox" aria-checked="${value.includes(o)}" data-action="toggle-option" data-id="${esc(t.row.id)}" data-cell="${esc(t.prop.id)}" data-value="${esc(o)}"><span class="badge ${t.prop.colors?.[o] || 'neutral'}"><i></i>${esc(o)}</span><span class="option-check">${icon('check')}</span></button>`).join('') || '<p class="menu-empty">속성 편집에서 옵션을 추가하세요.</p>'}`, anchor, `${rowName(t.row)} ${t.prop.name}`).classList.add('option-menu');
+}
+function rowMenu(id, anchor) {
+  const db = shownDb(); const row = db?.rows.find(r => r.id === id); if (!row) return; const rid = esc(id);
+  popMenu(`<div class="menu-caption">${esc(rowName(row))}</div><button role="menuitem" data-action="row-page" data-id="${rid}">${icon('external')}페이지로 열기</button><button role="menuitem" data-action="row-up" data-id="${rid}">${icon('sort')}위로 이동</button><button role="menuitem" data-action="row-down" data-id="${rid}">${icon('sort')}아래로 이동</button><button role="menuitem" data-action="row-duplicate" data-id="${rid}">${icon('copy')}복제</button><div class="menu-divider"></div><button class="danger" role="menuitem" data-action="delete-row" data-id="${rid}">${icon('trash')}삭제</button>`, anchor);
+}
+function viewMenu(anchor) {
+  popMenu(`<div class="menu-caption">보기 추가</div>${viewTypes.map(([type, label, glyph]) => `<button role="menuitem" data-action="add-view-type" data-type="${type}">${icon(glyph)}${label}</button>`).join('')}`, anchor);
+}
+// Moves a row one step among the rows currently shown.
+function moveRow(id, direction) {
+  const db = shownDb(); const row = db?.rows.find(r => r.id === id); if (!row) return; const view = activeView(db);
+  if (isSorted(db, view)) { toast('정렬 중에는 순서를 바꿀 수 없습니다.', true); return; }
+  const shown = visibleRows(db, view, ui.query); const other = shown[shown.indexOf(row) + direction]; if (!other) return;
+  const from = db.rows.indexOf(row); const to = db.rows.indexOf(other); db.rows.splice(from, 1); db.rows.splice(to, 0, row);
+  persist(); renderDatabase(); focusKey(`g:${id}`)?.focus();
+}
+function duplicateRow(id) {
+  const db = shownDb(); const index = db ? db.rows.findIndex(r => r.id === id) : -1; if (index < 0) return;
+  if (db.rows.length >= limits.rows) { toast(`${josa(db.itemName, '은', '는')} 최대 5,000개까지 만들 수 있습니다.`, true); return; }
+  const source = db.rows[index]; const suffix = ' (복사본)';
+  db.rows.splice(index + 1, 0, { id: uid(), title: `${source.title.slice(0, 500 - suffix.length)}${suffix}`, values: structuredClone(source.values), blocks: source.blocks.map(b => ({ ...structuredClone(b), id: uid() })) });
+  persist(); renderDatabase(); toast(`${josa(db.itemName, '을', '를')} 복제했습니다.`);
+}
+function deleteRow(id) {
+  const db = activeDb(); if (!db || !db.rows.some(r => r.id === id)) return;
+  db.rows = db.rows.filter(r => r.id !== id); persist();
+  if (ui.row?.id === id) { ui.row = null; render(); } else renderDatabase();
+  if (ui.modal) closeModal();
+  toast(`${josa(db.itemName, '을', '를')} 삭제했습니다.`);
+}
+function dropDraggedRow(target) {
+  const db = shownDb(); const row = db?.rows.find(r => r.id === ui.draggedRow); if (!row) return; const view = activeView(db);
+  if (target.dataset.dropGroup !== undefined) { const prop = groupProp(db, view); if (!prop) return; row.values[prop.id] = cleanValue(prop, target.dataset.dropGroup); }
+  else if (target.dataset.dropDate) { const prop = dateProp(db, view); if (!prop) return; row.values[prop.id] = cleanValue(prop, target.dataset.dropDate); }
+  else {
+    const other = db.rows.find(r => r.id === target.dataset.row); if (!other || other === row) return;
+    if (isSorted(db, view)) { toast('정렬 중에는 순서를 바꿀 수 없습니다.', true); return; }
+    const from = db.rows.indexOf(row); const to = db.rows.indexOf(other); db.rows.splice(from, 1); db.rows.splice(to, 0, row);
+  }
+  persist(); renderDatabase();
+}
+function openRowForm(dbId, rowId = null, preset = {}) {
+  const db = state.databases[dbId]; if (!db) return; const row = rowId ? db.rows.find(r => r.id === rowId) : null; if (rowId && !row) return;
+  if (!row && db.rows.length >= limits.rows) { toast(`${josa(db.itemName, '은', '는')} 최대 5,000개까지 만들 수 있습니다.`, true); return; }
+  showModal('row', row ? `${esc(db.itemName)} 상세` : `새로운 ${esc(db.itemName)}`, rowFormHTML(dbId, db, row, preset));
+}
+// Shows a row as a page of its own: title, properties and a block body.
+function openRowPage(dbId, rowId) {
+  const row = state.databases[dbId]?.rows.find(r => r.id === rowId); const page = dbPage(dbId); if (!row || !page || page.deleted) return;
+  if (!row.blocks.length) row.blocks.push(block());
+  state.activeId = dbId; rememberPage(dbId); ui.sidebar = false; ui.query = ''; ui.row = { db: dbId, id: rowId };
+  removePopovers(); saveSidebar(); render(); $('.main-scroll').scrollTop = 0;
+}
+function addDatabase(parentId) {
+  if (Object.keys(state.databases).length >= limits.databases) { toast('데이터베이스는 최대 200개까지 만들 수 있습니다.', true); return false; }
+  return addPage({ parentId, title: '새 데이터베이스', type: 'database', icon: 'table', blocks: [] }, page => { const db = makeDatabase(); db.activeViewId = db.views[0].id; state.databases[page.id] = db; });
+}
+const panels = { filter: ['필터', filterPanelHTML], sort: ['정렬', sortPanelHTML], props: ['속성 편집', propsPanelHTML], view: ['보기 설정', viewPanelHTML] };
+function openPanel(name) {
+  const db = shownDb(); if (!db || !panels[name]) return;
+  ui.panel = name; ui.confirmProp = null;
+  showModal('db-panel', panels[name][0], `<div id="db-panel">${panels[name][1](db)}</div>`, name === 'props' ? 'wide-modal' : '');
+}
+// Redraws the open settings panel and the database behind it; focus goes to the control labelled `label`.
+function refreshPanel(label = document.activeElement?.getAttribute('aria-label')) {
+  const db = shownDb(); const el = $('#db-panel'); if (!db || !el) return;
+  el.innerHTML = panels[ui.panel][1](db, ui.confirmProp); renderDatabase();
+  ((label && $$('[aria-label]', el).find(node => node.getAttribute('aria-label') === label && !node.disabled)) || $('.form-footer button', el))?.focus();
+}
+function addOption(propId) {
+  const db = shownDb(); const prop = db?.properties.find(p => p.id === propId); const input = $$('[data-new-option]').find(el => el.dataset.newOption === propId); if (!prop || !input) return;
+  const name = input.value.trim().slice(0, 100);
+  if (!name || name.includes(',') || prop.options.includes(name)) { toast(!name ? '옵션 이름을 입력하세요.' : name.includes(',') ? '옵션 이름에는 쉼표를 쓸 수 없습니다.' : '이미 있는 옵션입니다.', true); input.focus(); return; }
+  if (prop.options.length >= limits.options) { toast('옵션은 최대 100개까지 추가할 수 있습니다.', true); return; }
+  prop.options.push(name); persist(); refreshPanel(`${prop.name} 새 옵션`);
+}
+// Names typed in a panel apply at once, without redrawing it, so the next click still lands.
+function onPanelInput(el) {
+  const db = shownDb(); if (!db || el.tagName !== 'INPUT' || el.type === 'checkbox' || el.dataset.newOption) return;
+  const view = activeView(db); const prop = db.properties.find(p => p.id === el.dataset.propId);
+  if (el.dataset.filter !== undefined) { const f = view.filters[Number(el.dataset.filter)]; if (!f) return; f.value = el.value.slice(0, 500); }
+  else if (el.dataset.dbField === 'itemName') { const name = el.value.trim().slice(0, 20); if (!name) return; db.itemName = name; }
+  else if (el.dataset.viewField === 'name') { const name = el.value.trim().slice(0, 100); if (!name) return; view.name = name; }
+  else if (el.dataset.propField === 'name' && prop) { const name = el.value.trim().slice(0, 100); if (!name) return; relabel(el.closest('.prop-item'), prop.name, name); prop.name = name; }
+  else if (el.dataset.optionField === 'name' && prop) {
+    const index = Number(el.dataset.index); const from = prop.options[index]; if (!renameOption(db, prop, from, el.value)) return;
+    const choice = [...($('[data-prop-field="default"]', el.closest('.prop-item'))?.options || [])].find(o => o.value === from);
+    if (choice) choice.value = choice.textContent = prop.options[index];
+  } else return;
+  persist(); renderDatabase(); if (el.dataset.viewField) refreshSidebar();
+}
+function onPanelChange(el) {
+  const db = shownDb(); if (!db) return; const view = activeView(db); const prop = db.properties.find(p => p.id === el.dataset.propId);
+  if (el.tagName === 'INPUT' && el.type !== 'checkbox') {
+    // Text was applied while typing; a name that could not be used falls back to the stored one.
+    const stored = el.dataset.dbField ? db.itemName : el.dataset.viewField ? view.name : el.dataset.propField === 'name' ? prop?.name : el.dataset.optionField === 'name' ? prop?.options[Number(el.dataset.index)] : null;
+    if (typeof stored === 'string' && el.value.trim() !== stored) { el.value = stored; toast('사용할 수 없는 이름이라 이전 값으로 되돌렸습니다.', true); }
+    return;
+  }
+  ui.confirmProp = null;
+  if (el.dataset.filter !== undefined) {
+    const f = view.filters[Number(el.dataset.filter)]; if (!f) return;
+    if (el.dataset.part === 'prop') { const next = propOf(db, el.value); if (!next) return; f.prop = el.value; f.op = operators(next.type)[0][0]; f.value = ''; }
+    else if (el.dataset.part === 'op') { const op = operators(propOf(db, f.prop).type).find(([name]) => name === el.value); if (!op) return; f.op = op[0]; if (!op[2]) f.value = ''; }
+    else f.value = el.value.slice(0, 500);
+  } else if (el.dataset.sortRule !== undefined) {
+    const s = view.sorts[Number(el.dataset.sortRule)]; if (!s) return;
+    if (el.dataset.part === 'dir') s.dir = el.value === 'desc' ? 'desc' : 'asc'; else if (propOf(db, el.value)) s.prop = el.value;
+  } else if (el.dataset.viewField === 'type') { if (viewTypes.some(([type]) => type === el.value)) view.type = el.value; }
+  else if (el.dataset.viewField === 'groupBy' || el.dataset.viewField === 'dateProp') view[el.dataset.viewField] = el.value || null;
+  else if (el.dataset.propField === 'type' && prop) { if (propertyTypes.some(([type]) => type === el.value)) changeType(db, prop, el.value); }
+  else if (el.dataset.propField === 'visible' && prop) view.hidden = el.checked ? view.hidden.filter(id => id !== prop.id) : [...new Set([...view.hidden, prop.id])];
+  else if (el.dataset.propField === 'default' && prop) { if (prop.options.includes(el.value)) prop.default = el.value; else delete prop.default; }
+  else if (el.dataset.optionField === 'color' && prop) {
+    const name = prop.options[Number(el.dataset.index)]; if (name === undefined || !optionColors.some(([color]) => color === el.value)) return;
+    prop.colors ||= {}; if (el.value === 'neutral') delete prop.colors[name]; else prop.colors[name] = el.value;
+    if (!Object.keys(prop.colors).length) delete prop.colors;
+  } else return;
+  repair(db); persist(); refreshPanel(); if (el.dataset.viewField) refreshSidebar();
 }
 function openAccount() {
   const hosted = location.hostname.endsWith('.chatgpt.site');
@@ -111,6 +278,9 @@ function openAccount() {
 function refreshSidebar() { const holder = document.createElement('div'); holder.innerHTML = sidebar(); $('.sidebar').replaceWith(holder.firstElementChild); }
 function updateTitleUI() { $$('[data-page-name]').filter(el => el.dataset.pageName === current().id).forEach(el => { el.textContent = pageName(current()); }); document.title = `${pageName(current())} — Folio`; }
 const typeOptions = [ ['text', '텍스트', 'text', '일반 텍스트를 입력합니다', 'text paragraph 문단'], ['h1', '제목 1', 'text', '큰 섹션 제목', 'heading'], ['h2', '제목 2', 'text', '중간 크기의 제목', 'heading'], ['h3', '제목 3', 'text', '작은 크기의 제목', 'heading'], ['bullet', '글머리 기호', 'bullet', '간결하게 목록을 작성합니다', 'list 목록'], ['numbered', '번호 매기기 목록', 'numbered', '순서가 있는 목록을 작성합니다', 'list ordered 숫자'], ['todo', '할 일 목록', 'check', '완료할 일을 체크합니다', 'checkbox 체크'], ['toggle', '토글 목록', 'chevron', '내용을 접고 펼칩니다', 'collapse 접기'], ['quote', '인용', 'quote', '기억하고 싶은 문장', 'blockquote'], ['callout', '콜아웃', 'bulb', '중요한 정보를 강조합니다', '강조'], ['code', '코드', 'code', '고정폭 글꼴로 코드를 적습니다', 'pre 코드 블록'], ['divider', '구분선', 'more', '내용 사이에 여백을 만듭니다', 'hr line 선'] ];
+// The slash menu can also create a database, as a subpage of the current page.
+const databaseOption = ['database', '데이터베이스', 'table', '하위 페이지로 데이터베이스를 만듭니다', 'db 표 table'];
+const menuOptions = () => openRow() ? typeOptions : [...typeOptions, databaseOption];
 function removePopovers() { $$('.popover').forEach(el => el.remove()); ui.menu = null; ui.blockMenu = null; ui.slash = null; }
 function positionMenu(el, anchor) {
   if (!anchor) return;
@@ -141,7 +311,7 @@ function activateWorkspace(id, name = null) {
     const next = switchLocalWorkspace(state, id, name);
     state = next; history.clearHistory(); lastSavedRaw = localStorage.getItem(STORAGE_KEY); persistenceBlocked = false; persist.warned = false;
     const prefs = sidebarSettings(state); ui.sidebarPrefs = prefs; ui.expanded = new Set(prefs.expanded); ui.collapsed = prefs.collapsed; ui.sidebar = false;
-    applyDatabasePrefs();
+    ui.query = ''; ui.row = null;
     closeModal(false); removePopovers(); render(); toast('워크스페이스를 전환했습니다.');
   } catch (error) { toast(error.message || '저장 공간이 부족해 전환하지 않았습니다.', true); }
 }
@@ -160,8 +330,8 @@ function reorderSibling(id, direction) {
 // it lists only the types matching the text typed after "/".
 function renderBlockMenu(id, slash = null) {
   removePopovers();
-  const b = current().blocks.find(b => b.id === id); if (!b) return;
-  const options = slash ? slashMatches(typeOptions, slash.query) : typeOptions; if (!options.length) return;
+  const b = doc().blocks.find(b => b.id === id); if (!b) return;
+  const options = slash ? slashMatches(menuOptions(), slash.query) : typeOptions; if (!options.length) return;
   ui.blockMenu = id; ui.slash = slash && { query: slash.query, active: Math.min(Math.max(0, slash.active), options.length - 1) };
   const anchor = $(`[data-block-id="${id}"]`); const bounds = anchor.getBoundingClientRect();
   const el = document.createElement('div'); el.className = 'popover block-menu'; el.setAttribute('role', 'listbox'); el.setAttribute('aria-label', '블록 유형');
@@ -176,24 +346,31 @@ function showModal(name, title, body, size = '') {
   $('#overlay-root').innerHTML = `<div class="modal-backdrop" data-backdrop="true"><section class="modal ${size}" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-header"><h2 id="modal-title">${title}</h2><button class="icon-button" data-action="close-modal" aria-label="닫기">${icon('close')}</button></div><div class="modal-body">${body}</div></section></div>`;
   requestAnimationFrame(() => ($('[autofocus]', $('#overlay-root')) || $('input,select,textarea,button', $('.modal-body')) || $('.modal-header button'))?.focus());
 }
-function closeModal(restore = true) { $('#app').inert = false; $('#overlay-root').innerHTML = ''; ui.modal = null; ui.pendingImport = null; if (restore && ui.lastFocus?.isConnected) ui.lastFocus.focus(); }
+function closeModal(restore = true) {
+  $('#app').inert = false; $('#overlay-root').innerHTML = ''; ui.modal = null; ui.pendingImport = null;
+  const last = ui.lastFocus; if (restore) (last?.isConnected ? last : last?.dataset?.focus && focusKey(last.dataset.focus))?.focus();
+}
 function searchResults(q = '') {
   const query = q.trim().toLocaleLowerCase(); const recents = ui.sidebarPrefs.recents;
   let pages = state.pages.filter(p => !p.deleted && (!query || (ui.searchScope === 'title' ? p.title : `${p.title} ${p.blocks.map(b => b.text).join(' ')}`).toLocaleLowerCase().includes(query)));
   if (ui.searchSort === 'title') pages.sort((a, b) => pageName(a).localeCompare(pageName(b), 'ko'));
   else if (ui.searchSort === 'updated') pages.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   else pages.sort((a, b) => (recents.indexOf(a.id) < 0 ? 999 : recents.indexOf(a.id)) - (recents.indexOf(b.id) < 0 ? 999 : recents.indexOf(b.id)));
+  // Searching also finds database rows by their title, values and body.
+  const rows = [];
+  if (query && ui.modal === 'search') for (const p of state.pages) {
+    const db = state.databases[p.id]; if (p.deleted || !db) continue;
+    for (const row of db.rows) { if (rows.length >= 50) break; if ((ui.searchScope === 'title' ? row.title : `${rowText(db, row)} ${row.blocks.map(b => b.text).join(' ')}`).toLocaleLowerCase().includes(query)) rows.push({ p, db, row }); }
+  }
   const prefix = ui.modal === 'library' ? '목록 페이지' : '검색 결과';
-  return `<div class="search-caption">${query ? `검색 결과 ${pages.length}개` : ui.searchSort === 'recent' ? '최근 방문한 페이지부터 표시' : '워크스페이스의 모든 페이지'}</div>${pages.length ? pages.map(p => `<button class="search-result" data-action="search-open" data-id="${esc(p.id)}" aria-label="${prefix}: ${esc(pageName(p))}">${icon(p.icon)}<span><strong>${esc(pageName(p))}</strong><small>${esc((p.blocks.find(b => query && b.text.toLowerCase().includes(query))?.text || p.blocks[0]?.text || '프로젝트 데이터베이스').slice(0, 100))}</small></span>${icon('arrow')}</button>`).join('') : '<div class="empty-state">검색 결과가 없습니다.<small>다른 단어로 검색해 보세요.</small></div>'}`;
+  const pageHTML = pages.map(p => `<button class="search-result" data-action="search-open" data-id="${esc(p.id)}" aria-label="${prefix}: ${esc(pageName(p))}">${icon(p.icon)}<span><strong>${esc(pageName(p))}</strong><small>${esc((p.blocks.find(b => query && b.text.toLowerCase().includes(query))?.text || p.blocks[0]?.text || (p.type === 'database' ? `${pageName(p)} 데이터베이스` : '')).slice(0, 100))}</small></span>${icon('arrow')}</button>`).join('');
+  const rowHTML = rows.map(({ p, db, row }) => `<button class="search-result" data-action="search-open-row" data-db="${esc(p.id)}" data-id="${esc(row.id)}" aria-label="${prefix}: ${esc(rowName(row))} (${esc(pageName(p))})">${icon('file')}<span><strong>${esc(rowName(row))}</strong><small>${esc(pageName(p))} · ${esc(db.itemName)}</small></span>${icon('arrow')}</button>`).join('');
+  return `<div class="search-caption">${query ? `검색 결과 ${pages.length + rows.length}개` : ui.searchSort === 'recent' ? '최근 방문한 페이지부터 표시' : '워크스페이스의 모든 페이지'}</div>${pageHTML + rowHTML || '<div class="empty-state">검색 결과가 없습니다.<small>다른 단어로 검색해 보세요.</small></div>'}`;
 }
 function openSearch(library = false) {
   ui.searchQuery = ''; ui.searchScope = 'all'; ui.searchSort = library ? 'title' : 'recent';
   showModal(library ? 'library' : 'search', library ? '전체 페이지' : '무엇을 찾고 있나요?', `<label class="search-main">${icon('search')}<input type="search" aria-label="워크스페이스 검색" placeholder="페이지와 내용 검색…" autofocus><kbd>ESC</kbd></label><div class="search-filters"><label>범위<select aria-label="검색 범위"><option value="all">제목과 내용</option><option value="title">제목만</option></select></label><label>정렬<select aria-label="검색 정렬"><option value="recent" ${!library ? 'selected' : ''}>최근 방문순</option><option value="updated">최근 수정순</option><option value="title" ${library ? 'selected' : ''}>이름순</option></select></label></div><div id="search-results"></div>`, 'search-modal');
   $('#search-results').innerHTML = searchResults();
-}
-function openTask(id, status = '시작 전') {
-  const task = state.tasks.find(t => t.id === id) || { id: '', title: '', status, priority: '보통', assignee: '', date: '', note: '' };
-  showModal('task', task.id ? '작업 상세' : '새로운 작업', `<form id="task-form" data-task-id="${esc(task.id)}"><label class="field-label">작업 이름<input name="title" aria-label="작업 이름" value="${esc(task.title)}" required maxlength="500" placeholder="어떤 일을 할까요?" autofocus></label><div class="form-grid"><label class="field-label">상태<select name="status" aria-label="작업 상태">${statuses.map(s => `<option ${task.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select></label><label class="field-label">우선순위<select name="priority" aria-label="작업 우선순위">${priorities.map(s => `<option ${task.priority === s ? 'selected' : ''}>${s}</option>`).join('')}</select></label><label class="field-label">담당자<input name="assignee" aria-label="작업 담당자" value="${esc(task.assignee)}" maxlength="100" placeholder="담당자 이름"></label><label class="field-label">마감일<input type="date" name="date" aria-label="작업 마감일" value="${esc(task.date)}"></label></div><label class="field-label">메모<textarea name="note" aria-label="작업 메모" rows="4" maxlength="100000" placeholder="추가로 기록할 내용이 있나요?">${esc(task.note)}</textarea></label><div class="form-footer">${task.id ? `<button type="button" class="button danger" data-action="delete-task" data-id="${esc(task.id)}">${icon('trash')}작업 삭제</button>` : '<span></span>'}<button class="button primary" type="submit">작업 저장</button></div></form>`);
 }
 function openSettings() {
   showModal('settings', '워크스페이스 설정', `<form id="settings-form"><div class="settings-intro"><span class="brand-icon">f.</span><div><strong>나만의 공간, 나만의 방식</strong><p>집중하기 좋은 워크스페이스를 만들어 보세요.</p></div></div><label class="field-label">워크스페이스 이름<input name="name" aria-label="워크스페이스 이름" maxlength="120" required value="${esc(state.settings.name)}"></label><label class="field-label">화면 테마<select name="theme" aria-label="화면 테마"><option value="light" ${state.settings.theme === 'light' ? 'selected' : ''}>라이트 · 밝고 편안하게</option><option value="dark" ${state.settings.theme === 'dark' ? 'selected' : ''}>다크 · 차분하게 집중</option></select></label><div class="privacy-note">${icon('shield')}<div><strong>데이터는 이 브라우저에 저장됩니다.</strong><p>서버 동기화나 실시간 협업은 제공하지 않습니다. 브라우저 데이터를 지우기 전에 백업을 내려받으세요.</p></div></div><div class="backup-actions"><button type="button" class="button" data-action="export-workspace">${icon('download')}워크스페이스 내보내기</button><button type="button" class="button" data-action="import-workspace">${icon('upload')}백업 가져오기</button><input type="file" id="import-file" aria-label="백업 파일 선택" accept=".json,application/json" hidden></div><div id="import-feedback" role="alert"></div><div class="form-footer"><span></span><button type="submit" class="button primary">설정 저장</button></div></form>`);
@@ -211,13 +388,13 @@ function openTemplates() { showModal('templates', '작은 시작을 돕는 템�
 function download(name, content, type) { const url = URL.createObjectURL(new Blob([content], { type })); const link = document.createElement('a'); link.href = url; link.download = name.replace(/[<>:"/\\|?*]/g, '_'); link.click(); setTimeout(() => URL.revokeObjectURL(url), 2000); }
 const editable = id => $(`[data-edit-block="${id}"]`);
 function focusBlock(id, offset = null) { const el = editable(id); if (el) { el.focus(); setSelection(el, offset ?? readText(el).length); } else $(`[data-block-id="${id}"] [data-action="block-menu"]`)?.focus(); }
-const remember = () => history.snapshot(current());
+const remember = () => history.snapshot(doc());
 const marksOf = b => b.marks || [];
 // Code blocks stay plain; every other block keeps only marks that still fit its text.
 function setMarks(b, marks) { const next = b.type === 'code' ? [] : normalizeMarks(marks, b.text.length); if (next.length) b.marks = next; else delete b.marks; }
 function setBlockContent(el, b, caret = null) { el.innerHTML = inlineHTML(b); if (caret !== null) setSelection(el, caret); }
 function insertIntoBlock(el, b, pos, text) {
-  history.typing(current(), b.id);
+  history.typing(doc(), b.id);
   const marks = spliceMarks(marksOf(b), pos.start, pos.end - pos.start, text.length);
   b.text = (b.text.slice(0, pos.start) + text + b.text.slice(pos.end)).slice(0, MAX_TEXT); setMarks(b, marks);
   setBlockContent(el, b, Math.min(pos.start + text.length, b.text.length)); persist();
@@ -225,7 +402,7 @@ function insertIntoBlock(el, b, pos, text) {
 // Converts a block to another type from the slash menu or a Markdown shortcut,
 // keeping the text from offset `from` on (nothing when `from` is null).
 function convertBlock(b, type, from = null) {
-  const list = current().blocks; const marks = from === null ? [] : sliceMarks(marksOf(b), from, b.text.length);
+  const list = doc().blocks; const marks = from === null ? [] : sliceMarks(marksOf(b), from, b.text.length);
   b.type = type; b.text = from === null ? '' : b.text.slice(from); setMarks(b, marks); removePopovers();
   if (type !== 'divider') { persist(); render(); focusBlock(b.id, 0); return; }
   const index = list.indexOf(b); let next = list[index + 1];
@@ -233,21 +410,21 @@ function convertBlock(b, type, from = null) {
   persist(); render(); focusBlock(next.id, 0);
 }
 function visibleNeighbor(index, direction) {
-  const list = current().blocks; const hidden = hiddenBlocks(list);
+  const list = doc().blocks; const hidden = hiddenBlocks(list);
   for (let i = index + direction; i >= 0 && i < list.length; i += direction) if (!hidden.has(list[i].id) && !staticTypes.includes(list[i].type)) return list[i];
   return null;
 }
 function duplicateBlock(id) {
-  const list = current().blocks; const index = list.findIndex(b => b.id === id); if (index < 0) return;
+  const list = doc().blocks; const index = list.findIndex(b => b.id === id); if (index < 0) return;
   if (list.length >= 10000) { toast('블록은 페이지당 최대 10,000개까지 만들 수 있습니다.', true); return; }
   remember(); const copy = { ...structuredClone(list[index]), id: uid() };
   list.splice(index + 1, 0, copy); removePopovers(); persist(); render(); focusBlock(copy.id);
 }
 function undoRedo(redo) {
   const focused = document.activeElement?.dataset?.editBlock;
-  if (!(redo ? history.redo : history.undo)(current())) { toast(redo ? '다시 실행할 작업이 없습니다.' : '실행 취소할 작업이 없습니다.'); return; }
+  if (!(redo ? history.redo : history.undo)(doc())) { toast(redo ? '다시 실행할 작업이 없습니다.' : '실행 취소할 작업이 없습니다.'); return; }
   removePopovers(); persist(); render();
-  const list = current().blocks; focusBlock((list.find(b => b.id === focused) || list.at(-1)).id);
+  const list = doc().blocks; focusBlock((list.find(b => b.id === focused) || list.at(-1)).id);
 }
 
 document.addEventListener('click', event => {
@@ -256,7 +433,8 @@ document.addEventListener('click', event => {
   const target = event.target.closest('[data-action]');
   if (!target) { if (!event.target.closest('.popover')) removePopovers(); if (event.target.dataset.backdrop) closeModal(); return; }
   const { action, id } = target.dataset;
-  if (!['block-type', 'block-menu', 'page-menu', 'block-delete', 'block-up', 'block-down', 'block-duplicate'].includes(action)) removePopovers();
+  if (!['block-type', 'block-menu', 'page-menu', 'block-delete', 'block-up', 'block-down', 'block-duplicate', 'toggle-option'].includes(action)) removePopovers();
+  const confirming = ui.confirmProp; ui.confirmProp = null;
   switch (action) {
     case 'open': if (state.pages.some(p => p.id === id && !p.deleted)) go(id); else toast('이 페이지는 휴지통에 있습니다.', true); break;
     case 'open-home': go(state.pages.find(p => p.type === 'home' && !p.deleted)?.id || state.pages.find(p => !p.deleted).id); break;
@@ -279,31 +457,53 @@ document.addEventListener('click', event => {
     case 'settings': openSettings(); break;
     case 'trash': openTrash(); break;
     case 'close-modal': closeModal(); break;
-    case 'view-table': ui.view = 'table'; saveDatabasePrefs(); renderDatabase(); break;
-    case 'view-board': ui.view = 'board'; saveDatabasePrefs(); renderDatabase(); break;
-    case 'sort': ui.sort = ui.sort === 'none' ? 'asc' : ui.sort === 'asc' ? 'desc' : 'none'; saveDatabasePrefs(); renderDatabase(); break;
+    case 'db-view': { const db = shownDb(); if (db?.views.some(v => v.id === target.dataset.view)) { db.activeViewId = target.dataset.view; persist(false); renderDatabase(); } break; }
+    case 'add-view': viewMenu(target); break;
+    case 'add-view-type': { const db = shownDb(); if (!db || !viewTypes.some(([type]) => type === target.dataset.type)) break; if (db.views.length >= limits.views) { toast('보기는 최대 20개까지 만들 수 있습니다.', true); break; } const view = addView(db, target.dataset.type); persist(); renderDatabase(); refreshSidebar(); focusKey(`v:${view.id}`)?.focus(); break; }
+    case 'quick-sort': { const db = shownDb(); if (!db) break; db.quick.sort = db.quick.sort === 'none' ? 'asc' : db.quick.sort === 'asc' ? 'desc' : 'none'; persist(false); renderDatabase(); break; }
     case 'clear-db-search': ui.query = ''; $('[aria-label="데이터베이스 검색"]').value = ''; refreshDatabaseResults(); $('[aria-label="데이터베이스 검색"]').focus(); break;
+    case 'calendar-move': ui.month = Number(target.dataset.delta) ? shiftMonth(ui.month, Number(target.dataset.delta)) : thisMonth(); refreshDatabaseResults(); break;
+    case 'db-panel': openPanel(target.dataset.panel); break;
     case 'account': openAccount(); break;
-    case 'new-task': if (state.tasks.length >= 5000) { toast('작업은 최대 5,000개까지 만들 수 있습니다.', true); break; } openTask(null, target.dataset.status || ui.status || '시작 전'); break;
-    case 'edit-task': openTask(id); break;
-    case 'delete-task': state.tasks = state.tasks.filter(t => t.id !== id); persist(); closeModal(); renderDatabase(); toast('작업을 삭제했습니다.'); break;
-    case 'export-page': download(`${pageName(state.pages.find(p => p.id === id) || current())}.md`, pageMarkdown(state.pages.find(p => p.id === id) || current()), 'text/markdown;charset=utf-8'); toast('페이지를 Markdown으로 내보냈습니다.'); break;
+    case 'new-row': { const db = shownDb(); if (!db) break; const preset = {}; const quick = quickFilterProp(db); if (quick && db.quick.filter) preset[quick.id] = db.quick.filter; if (target.dataset.prop) preset[target.dataset.prop] = target.dataset.value; openRowForm(shownDbId(), null, preset); break; }
+    case 'open-row': openRowForm(shownDbId(), id); break;
+    case 'row-menu': rowMenu(id, target); break;
+    case 'row-page': openRowPage(shownDbId(), id); break;
+    case 'search-open-row': closeModal(false); openRowPage(target.dataset.db, id); break;
+    case 'close-row': { const rowId = ui.row?.id; ui.row = null; render(); focusKey(`o:${rowId}`)?.focus(); break; }
+    case 'row-up': case 'row-down': moveRow(id, action === 'row-up' ? -1 : 1); break;
+    case 'row-duplicate': duplicateRow(id); break;
+    case 'delete-row': deleteRow(id); break;
+    case 'option-menu': optionMenu(target); break;
+    case 'toggle-option': { const t = cellTarget(target); if (!t) break; const value = valueOf(t.row, t.prop); const name = target.dataset.value; t.row.values[t.prop.id] = t.prop.options.filter(o => o === name ? !value.includes(o) : value.includes(o)); persist(); target.setAttribute('aria-checked', t.row.values[t.prop.id].includes(name)); refreshDatabaseResults(); break; }
+    case 'new-database': addDatabase(id); break;
+    case 'filter-add': { const view = activeView(shownDb()); if (view.filters.length >= limits.filters) { toast('필터는 최대 20개까지 추가할 수 있습니다.', true); break; } view.filters.push({ prop: 'title', op: 'contains', value: '' }); persist(); refreshPanel(`필터 ${view.filters.length} 속성`); break; }
+    case 'filter-remove': activeView(shownDb()).filters.splice(Number(target.dataset.index), 1); persist(); refreshPanel(null); break;
+    case 'sort-add': { const view = activeView(shownDb()); if (view.sorts.length >= limits.sorts) { toast('정렬은 최대 10개까지 추가할 수 있습니다.', true); break; } view.sorts.push({ prop: 'title', dir: 'asc' }); persist(); refreshPanel(`정렬 ${view.sorts.length} 속성`); break; }
+    case 'sort-remove': activeView(shownDb()).sorts.splice(Number(target.dataset.index), 1); persist(); refreshPanel(null); break;
+    case 'prop-add': { const db = shownDb(); if (db.properties.length >= limits.properties) { toast('속성은 최대 50개까지 추가할 수 있습니다.', true); break; } let name = '속성'; let n = 2; while (db.properties.some(p => p.name === name)) name = `속성 ${n++}`; db.properties.push({ id: uid(), name, type: 'text' }); persist(); refreshPanel(`${name} 속성 이름`); break; }
+    case 'prop-move': { const db = shownDb(); const i = db.properties.findIndex(p => p.id === id); const j = i + Number(target.dataset.delta); if (i >= 0 && j >= 0 && j < db.properties.length) { [db.properties[i], db.properties[j]] = [db.properties[j], db.properties[i]]; persist(); refreshPanel(); } break; }
+    case 'prop-delete': { const db = shownDb(); const prop = db.properties.find(p => p.id === id); if (!prop) break; if (confirming !== id) { ui.confirmProp = id; refreshPanel(`${prop.name} 속성 삭제 확인`); break; } db.properties = db.properties.filter(p => p !== prop); repair(db); persist(); refreshPanel(null); toast('속성을 삭제했습니다.'); break; }
+    case 'option-add': addOption(id); break;
+    case 'option-delete': { const db = shownDb(); const prop = db.properties.find(p => p.id === id); if (!prop?.options) break; prop.options.splice(Number(target.dataset.index), 1); repair(db); persist(); refreshPanel(`${prop.name} 새 옵션`); break; }
+    case 'view-delete': { const db = shownDb(); if (db.views.length < 2) break; db.views = db.views.filter(v => v !== activeView(db)); db.activeViewId = db.views[0].id; persist(); renderDatabase(); refreshSidebar(); closeModal(); toast('보기를 삭제했습니다.'); break; }
+    case 'export-page': { const row = !id && openRow(); const page = state.pages.find(p => p.id === id) || current(); download(`${row ? rowName(row) : pageName(page)}.md`, pageMarkdown(row || page), 'text/markdown;charset=utf-8'); toast('페이지를 Markdown으로 내보냈습니다.'); break; }
     case 'export-workspace': download('folio-workspace-backup.json', JSON.stringify(state, null, 2), 'application/json'); toast('백업 파일을 내보냈습니다.'); break;
     case 'import-workspace': $('#import-file').click(); break;
-    case 'confirm-import': if (ui.pendingImport) { state = { ...ui.pendingImport, workspaceId: workspaceId(state) }; history.clearHistory(); applyDatabasePrefs(); ui.sidebarPrefs = sidebarSettings(state); ui.expanded = new Set(ui.sidebarPrefs.expanded); ui.collapsed = ui.sidebarPrefs.collapsed; persistenceBlocked = false; lastSavedRaw = localStorage.getItem(STORAGE_KEY); persist.warned = false; persist(); closeModal(false); render(); toast('백업을 가져왔습니다.'); } break;
+    case 'confirm-import': if (ui.pendingImport) { state = { ...ui.pendingImport, workspaceId: workspaceId(state) }; history.clearHistory(); ui.query = ''; ui.row = null; ui.sidebarPrefs = sidebarSettings(state); ui.expanded = new Set(ui.sidebarPrefs.expanded); ui.collapsed = ui.sidebarPrefs.collapsed; persistenceBlocked = false; lastSavedRaw = localStorage.getItem(STORAGE_KEY); persist.warned = false; persist(); closeModal(false); render(); toast('백업을 가져왔습니다.'); } break;
     case 'cancel-import': ui.pendingImport = null; $('#import-feedback').innerHTML = ''; break;
-    case 'append-block': { remember(); const b = block(); current().blocks.push(b); persist(); render(); focusBlock(b.id); break; }
-    case 'add-block': { remember(); const list = current().blocks; const index = list.findIndex(b => b.id === id); const b = block(); if (indentOf(list[index])) b.indent = indentOf(list[index]); list.splice(subtreeEnd(list, index), 0, b); persist(); render(); focusBlock(b.id); break; }
+    case 'append-block': { remember(); const b = block(); doc().blocks.push(b); persist(); render(); focusBlock(b.id); break; }
+    case 'add-block': { remember(); const list = doc().blocks; const index = list.findIndex(b => b.id === id); const b = block(); if (indentOf(list[index])) b.indent = indentOf(list[index]); list.splice(subtreeEnd(list, index), 0, b); persist(); render(); focusBlock(b.id); break; }
     case 'block-menu': renderBlockMenu(id); break;
-    case 'block-type': { const b = current().blocks.find(b => b.id === id); remember(); if (ui.slash) { convertBlock(b, target.dataset.type); break; } b.type = target.dataset.type; if (b.text === '/') b.text = ''; setMarks(b, marksOf(b)); removePopovers(); persist(); render(); focusBlock(id); break; }
+    case 'block-type': { const b = doc().blocks.find(b => b.id === id); remember(); if (target.dataset.type === 'database') { b.text = ''; delete b.marks; removePopovers(); persist(); if (!addDatabase(current().id)) { render(); focusBlock(id); } break; } if (ui.slash) { convertBlock(b, target.dataset.type); break; } b.type = target.dataset.type; if (b.text === '/') b.text = ''; setMarks(b, marksOf(b)); removePopovers(); persist(); render(); focusBlock(id); break; }
     case 'block-duplicate': duplicateBlock(id); break;
     case 'format': applyMark(target.dataset.type); break;
     case 'format-panel': ui.format.panel = ui.format.panel === target.dataset.panel ? null : target.dataset.panel; renderFormatBar(); if (ui.format.panel === 'link') $('#format-bar input').focus(); break;
     case 'format-color': applyMark(target.dataset.kind, target.dataset.value || null, ui.format); break;
     case 'format-unlink': applyMark('link', null, ui.format); break;
-    case 'toggle-open': { const b = current().blocks.find(b => b.id === id); remember(); b.open = b.open === false; persist(); render(); $(`[data-block-id="${id}"] .toggle-arrow`)?.focus(); break; }
-    case 'block-delete': { remember(); current().blocks = current().blocks.filter(b => b.id !== id); if (!current().blocks.length) current().blocks.push(block()); removePopovers(); persist(); render(); break; }
-    case 'block-up': case 'block-down': { remember(); const list = current().blocks; const i = list.findIndex(b => b.id === id); const j = i + (action === 'block-up' ? -1 : 1); if (j >= 0 && j < list.length) [list[i], list[j]] = [list[j], list[i]]; removePopovers(); persist(); render(); break; }
+    case 'toggle-open': { const b = doc().blocks.find(b => b.id === id); remember(); b.open = b.open === false; persist(); render(); $(`[data-block-id="${id}"] .toggle-arrow`)?.focus(); break; }
+    case 'block-delete': { remember(); doc().blocks = doc().blocks.filter(b => b.id !== id); if (!doc().blocks.length) doc().blocks.push(block()); removePopovers(); persist(); render(); break; }
+    case 'block-up': case 'block-down': { remember(); const list = doc().blocks; const i = list.findIndex(b => b.id === id); const j = i + (action === 'block-up' ? -1 : 1); if (j >= 0 && j < list.length) [list[i], list[j]] = [list[j], list[i]]; removePopovers(); persist(); render(); break; }
     case 'move-page': { const page = state.pages.find(p => p.id === id) || current(); const excluded = descendants(state, page.id); showModal('move', '페이지 이동', `<form id="move-form" data-page-id="${esc(page.id)}"><label class="field-label">상위 페이지<select name="parent" aria-label="이동할 상위 페이지"><option value="">개인 페이지 (최상위)</option>${state.pages.filter(p => !p.deleted && !excluded.has(p.id)).map(p => `<option value="${esc(p.id)}" ${p.id === page.parentId ? 'selected' : ''}>${esc(pageName(p))}</option>`).join('')}</select></label><div class="form-footer"><span></span><button class="button primary">이동</button></div></form>`); break; }
     case 'workspace-menu': openWorkspaceMenu(target); break;
     case 'switch-workspace': activateWorkspace(target.dataset.workspace); break;
@@ -319,28 +519,28 @@ document.addEventListener('click', event => {
     case 'sidebar-manual': ui.sidebarPrefs.pageSort = 'manual'; saveSidebar(); refreshSidebar(); break;
     case 'sidebar-updated': ui.sidebarPrefs.pageSort = 'updated'; saveSidebar(); refreshSidebar(); break;
     case 'sidebar-limit': ui.sidebarPrefs.limit = Number(target.dataset.limit); saveSidebar(); refreshSidebar(); break;
-    case 'sidebar-db-view': go(id); ui.view = target.dataset.view; saveDatabasePrefs(); renderDatabase(); break;
-
+    case 'sidebar-db-view': { go(id); const db = state.databases[id]; if (db?.views.some(v => v.id === target.dataset.view)) { db.activeViewId = target.dataset.view; persist(false); renderDatabase(); } break; }
   }
 });
 document.addEventListener('input', event => {
   const el = event.target;
-  if (el.id === 'page-title') { current().title = el.value; persist(); updateTitleUI(); }
+  if (el.id === 'page-title') { current().title = el.value; persist(); updateTitleUI(); if (current().type === 'database') { $('.db-table')?.setAttribute('aria-label', `${pageName(current())} 데이터베이스`); $('#database').setAttribute('aria-label', `${pageName(current())} 관리`); } }
   if (el.dataset.editBlock) onBlockInput(el, event);
   if (el.getAttribute('aria-label') === '워크스페이스 검색') { ui.searchQuery = el.value; $('#search-results').innerHTML = searchResults(el.value); }
+  if (el.id === 'row-title') { const row = openRow(); if (row) { relabel($('#row-props'), rowName(row), el.value.trim() || '제목 없음'); row.title = el.value; persist(); $('#row-crumb').textContent = rowName(row); document.title = `${rowName(row)} — Folio`; } }
   if (el.getAttribute('aria-label') === '데이터베이스 검색') { ui.query = el.value; refreshDatabaseResults(); }
-  if (el.dataset.taskField === 'assignee') { const task = state.tasks.find(t => t.id === el.dataset.id); if (task) { task.assignee = el.value.slice(0, 100); persist(); refreshDatabaseSummary(); } }
+  if (el.dataset.cell) { const t = cellTarget(el); if (t && ['text', 'url', 'number'].includes(t.prop.type)) { t.row.values[t.prop.id] = cleanValue(t.prop, el.value); persist(); ui.staleCells = true; refreshTotals(); } }
+  if (ui.modal === 'db-panel' && el.closest('#db-panel')) onPanelInput(el);
 });
 document.addEventListener('change', async event => {
   const el = event.target;
   if (el.getAttribute('aria-label') === '검색 범위') { ui.searchScope = el.value; $('#search-results').innerHTML = searchResults(ui.searchQuery); }
   if (el.getAttribute('aria-label') === '검색 정렬') { ui.searchSort = el.value; $('#search-results').innerHTML = searchResults(ui.searchQuery); }
-  if (el.dataset.check) { remember(); current().blocks.find(b => b.id === el.dataset.check).checked = el.checked; persist(); $(`[data-edit-block="${el.dataset.check}"]`).classList.toggle('checked', el.checked); }
-  if (el.getAttribute('aria-label') === '상태 필터') { ui.status = el.value; saveDatabasePrefs(); renderDatabase(); }
-  if (['status', 'priority', 'date'].includes(el.dataset.taskField)) {
-    const task = state.tasks.find(t => t.id === el.dataset.id);
-    if (task) { task[el.dataset.taskField] = el.value; persist(); refreshDatabaseResults(); }
-  }
+  if (el.dataset.check) { remember(); doc().blocks.find(b => b.id === el.dataset.check).checked = el.checked; persist(); $(`[data-edit-block="${el.dataset.check}"]`).classList.toggle('checked', el.checked); }
+  if (el.dataset.quick === 'filter') { const db = shownDb(); if (db) { db.quick.filter = quickFilterProp(db)?.options.includes(el.value) ? el.value : ''; persist(false); refreshDatabaseResults(); } }
+  if (el.dataset.total) { const db = shownDb(); const prop = db?.properties.find(p => p.id === el.dataset.total); if (prop) { const view = activeView(db); if (el.value !== 'none' && calcsFor(prop).some(([name]) => name === el.value)) view.totals[prop.id] = el.value; else delete view.totals[prop.id]; persist(false); refreshDatabaseResults(); } }
+  if (el.dataset.cell) { const t = cellTarget(el); if (t && ['select', 'date', 'checkbox'].includes(t.prop.type)) { t.row.values[t.prop.id] = cleanValue(t.prop, t.prop.type === 'checkbox' ? el.checked : el.value); persist(); refreshDatabaseResults(); } }
+  if (ui.modal === 'db-panel' && el.closest('#db-panel')) onPanelChange(el);
   if (el.id === 'import-file' && el.files[0]) {
     try { if (el.files[0].size > 5_000_000) throw new Error('5MB 이하의 파일을 선택해 주세요.'); ui.pendingImport = validateWorkspace(JSON.parse(await el.files[0].text())); $('#import-feedback').innerHTML = `<div class="import-confirm"><p>현재 워크스페이스를 백업의 페이지 ${ui.pendingImport.pages.length}개로 교체합니다. 먼저 현재 데이터를 내보내는 것을 권장합니다.</p><button type="button" class="button danger" data-action="confirm-import">백업으로 교체</button><button type="button" class="button" data-action="cancel-import">가져오기 취소</button></div>`; }
     catch (error) { ui.pendingImport = null; $('#import-feedback').textContent = error.message || '백업을 읽을 수 없습니다.'; }
@@ -349,16 +549,24 @@ document.addEventListener('change', async event => {
 });
 document.addEventListener('submit', event => {
   event.preventDefault(); const form = event.target; const data = new FormData(form);
-  if (form.id === 'task-form') {
-    const title = String(data.get('title')).trim(); if (!title) { $('[name="title"]', form).focus(); return; }
-    const id = form.dataset.taskId || uid(); const item = { id, title, status: data.get('status'), priority: data.get('priority'), assignee: String(data.get('assignee')).trim(), date: data.get('date'), note: String(data.get('note')).slice(0, 100000) };
-    const index = state.tasks.findIndex(t => t.id === id); if (index === -1) state.tasks.push(item); else state.tasks[index] = item;
-    if (index === -1) {
-      if (ui.query && !`${item.title} ${item.status} ${item.priority} ${item.assignee} ${item.date}`.toLowerCase().includes(ui.query.trim().toLowerCase())) ui.query = '';
-      if (ui.status && ui.status !== item.status) ui.status = '';
-      state.settings.database = { view: ui.view, status: ui.status, sort: ui.sort };
+  if (form.id === 'row-form') {
+    const db = state.databases[form.dataset.db]; if (!db) return;
+    const title = String(data.get('title')).trim().slice(0, 500); if (!title) { $('[name="title"]', form).focus(); return; }
+    let row = db.rows.find(r => r.id === form.dataset.rowId); const created = !row;
+    if (created) { if (db.rows.length >= limits.rows) return; row = makeRow(db); db.rows.push(row); }
+    row.title = title;
+    for (const p of db.properties) row.values[p.id] = cleanValue(p, p.type === 'multi' ? data.getAll(`p-${p.id}`) : p.type === 'checkbox' ? data.has(`p-${p.id}`) : data.get(`p-${p.id}`));
+    if (created) {
+      // A new row must not vanish behind the search or the quick filter.
+      const view = activeView(db);
+      if (ui.query && !visibleRows(db, view, ui.query).includes(row)) ui.query = '';
+      if (!visibleRows(db, view, ui.query).includes(row)) db.quick.filter = '';
+      const date = view.type === 'calendar' && dateProp(db, view); if (date && valueOf(row, date)) ui.month = valueOf(row, date).slice(0, 7);
     }
-    persist(); closeModal(); renderDatabase(); toast('작업을 저장했습니다.');
+    persist();
+    if (event.submitter?.value === 'page') { closeModal(false); openRowPage(form.dataset.db, row.id); }
+    else { renderDatabase(); closeModal(); }
+    toast(`${josa(db.itemName, '을', '를')} 저장했습니다.`);
   }
   if (form.id === 'settings-form') { const name = String(data.get('name')).trim(); if (!name) return; state.settings.name = name; state.settings.theme = data.get('theme'); persist(); closeModal(false); render(); toast('설정을 저장했습니다.'); }
   if (form.id === 'move-form') { try { const parent = data.get('parent') || null; movePage(state, form.dataset.pageId, parent); if (parent) ui.expanded.add(parent); saveSidebar(); closeModal(false); render(); toast('페이지를 이동했습니다.'); } catch (error) { toast(error.message, true); } }
@@ -372,11 +580,13 @@ document.addEventListener('keydown', event => {
   const menu = event.target.closest('.popover');
   if (menu && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) { event.preventDefault(); const items = $$('button:not([disabled]),a[href]', menu); const i = items.indexOf(document.activeElement); const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (i + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length; items[next]?.focus(); return; }
 
-  if ((event.ctrlKey || event.metaKey) && !event.altKey && ['z', 'y'].includes(event.key.toLowerCase()) && !ui.modal && !event.target.matches('input,textarea,select') && current().type !== 'database') { event.preventDefault(); undoRedo(event.shiftKey || event.key.toLowerCase() === 'y'); return; }
+  if ((event.ctrlKey || event.metaKey) && !event.altKey && ['z', 'y'].includes(event.key.toLowerCase()) && !ui.modal && !event.target.matches('input,textarea,select') && (current().type !== 'database' || openRow())) { event.preventDefault(); undoRedo(event.shiftKey || event.key.toLowerCase() === 'y'); return; }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); if (!openLinkEditor()) openSearch(); return; }
   if ((event.ctrlKey || event.metaKey) && event.altKey && event.key.toLowerCase() === 'n') { event.preventDefault(); addPage(); return; }
   if (event.key === 'Escape') { closeFormatBar(true); removePopovers(); if (ui.modal) closeModal(); if (ui.sidebar) { ui.sidebar = false; render(); } }
   if (ui.modal && event.key === 'Tab') { const controls = $$('button:not([disabled]), a[href], input:not([hidden]), select, textarea, [tabindex="0"]', $('.modal')).filter(el => el.getClientRects().length); const first = controls[0], last = controls.at(-1); if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); } else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); } }
+  if (event.key === 'Enter' && event.target.matches?.('input[data-cell]:not([type="checkbox"])')) { event.preventDefault(); refreshDatabaseResults(); return; }
+  if (event.key === 'Enter' && event.target.dataset?.newOption) { event.preventDefault(); addOption(event.target.dataset.newOption); return; }
   if (event.target.dataset?.editBlock) onBlockKeydown(event, event.target);
 });
 // The invisible caret holder has done its job once real text sits next to it.
@@ -389,7 +599,7 @@ function dropUsedHold(el) {
   if (pos) setSelection(el, pos.start, pos.end);
 }
 function onBlockInput(el, event) {
-  const page = current(); const b = page.blocks.find(b => b.id === el.dataset.editBlock); if (!b) return;
+  const page = doc(); const b = page.blocks.find(b => b.id === el.dataset.editBlock); if (!b) return;
   const { text, marks } = readInline(el);
   history.typing(page, b.id);
   b.text = text.slice(0, MAX_TEXT); setMarks(b, marks);
@@ -431,7 +641,7 @@ function applyInlineShortcut(b, el, event) {
 // With only a caret, it changes the formatting of what is typed next.
 function applyMark(type, value = null, range = null) {
   const id = range?.id || document.activeElement?.dataset?.editBlock; const el = id && editable(id);
-  const b = el && current().blocks.find(b => b.id === id); if (!b || b.type === 'code') return;
+  const b = el && doc().blocks.find(b => b.id === id); if (!b || b.type === 'code') return;
   const pos = range || selectionOffsets(el); if (!pos) return;
   if (pos.start === pos.end) {
     if (['link', 'color', 'bg'].includes(type)) return;
@@ -446,7 +656,7 @@ function applyMark(type, value = null, range = null) {
 }
 const formatButtons = [['bold', '굵게', 'B'], ['italic', '기울임', 'I'], ['underline', '밑줄', 'U'], ['strike', '취소선', 'S'], ['code', '인라인 코드', '&lt;/&gt;']];
 function renderFormatBar() {
-  const f = ui.format; const bar = $('#format-bar'); const b = f && current().blocks.find(b => b.id === f.id); if (!b || !bar) return;
+  const f = ui.format; const bar = $('#format-bar'); const b = f && doc().blocks.find(b => b.id === f.id); if (!b || !bar) return;
   const marks = marksOf(b); const inRange = type => marksIn(marks, f.start, f.end).find(m => m.type === type);
   const swatches = (kind, label) => `<div class="swatch-row" role="group" aria-label="${label}"><span>${label}</span><button type="button" class="swatch" data-action="format-color" data-kind="${kind}" data-value="" aria-label="${label} 기본" aria-pressed="${!inRange(kind)}">가</button>${colors.map(([name, title]) => `<button type="button" class="swatch" data-action="format-color" data-kind="${kind}" data-value="${name}" aria-label="${label} ${title}" aria-pressed="${inRange(kind)?.value === name}"><span data-${kind}="${name}">가</span></button>`).join('')}</div>`;
   bar.innerHTML = `<div class="format-buttons">${formatButtons.map(([type, label, glyph]) => `<button type="button" class="format-${type}" data-action="format" data-type="${type}" aria-label="${label}" aria-pressed="${covers(marks, f.start, f.end, type)}">${glyph}</button>`).join('')}<button type="button" data-action="format-panel" data-panel="link" aria-label="링크" aria-pressed="${!!inRange('link')}" aria-expanded="${f.panel === 'link'}">${icon('external')}</button><button type="button" class="format-color" data-action="format-panel" data-panel="color" aria-label="색상" aria-expanded="${f.panel === 'color'}">A</button></div>
@@ -457,7 +667,7 @@ function showFormatBar() {
   let bar = $('#format-bar');
   if (bar?.contains(document.activeElement)) return;
   const el = document.activeElement?.dataset?.editBlock ? document.activeElement : null;
-  const pos = el && selectionOffsets(el); const b = el && current().blocks.find(b => b.id === el.dataset.editBlock);
+  const pos = el && selectionOffsets(el); const b = el && doc().blocks.find(b => b.id === el.dataset.editBlock);
   if (!pos || pos.start === pos.end || !b || b.type === 'code' || ui.modal) { closeFormatBar(); return; }
   const same = ui.format && ui.format.id === b.id && ui.format.start === pos.start && ui.format.end === pos.end;
   ui.format = { id: b.id, start: pos.start, end: pos.end, panel: same ? ui.format.panel : null };
@@ -481,7 +691,7 @@ function openLinkEditor() {
 }
 // Pasting keeps plain text only; several lines become several blocks.
 function pasteText(el, text) {
-  const list = current().blocks; const index = list.findIndex(b => b.id === el.dataset.editBlock); const b = list[index]; if (!b) return;
+  const list = doc().blocks; const index = list.findIndex(b => b.id === el.dataset.editBlock); const b = list[index]; if (!b) return;
   const pos = selectionOffsets(el) || { start: b.text.length, end: b.text.length };
   const lines = text.split('\n'); removePopovers();
   if (b.type === 'code' || lines.length === 1) { insertIntoBlock(el, b, pos, text); return; }
@@ -509,13 +719,13 @@ document.addEventListener('mousedown', event => { if (event.target.closest?.('#f
 document.addEventListener('selectionchange', showFormatBar);
 function onBlockKeydown(event, el) {
   if (event.isComposing) return;
-  const page = current(); const list = page.blocks; const index = list.findIndex(b => b.id === el.dataset.editBlock); const b = list[index]; if (!b) return;
+  const page = doc(); const list = page.blocks; const index = list.findIndex(b => b.id === el.dataset.editBlock); const b = list[index]; if (!b) return;
   const mod = event.ctrlKey || event.metaKey; const key = event.key;
   const pos = selectionOffsets(el) || { start: b.text.length, end: b.text.length };
   if (ui.slash && ui.blockMenu === b.id && ['ArrowDown', 'ArrowUp', 'Enter'].includes(key)) {
     event.preventDefault();
     if (key === 'Enter') { $('.block-menu [aria-selected="true"]')?.click(); return; }
-    const count = slashMatches(typeOptions, ui.slash.query).length;
+    const count = slashMatches(menuOptions(), ui.slash.query).length;
     renderBlockMenu(b.id, { query: ui.slash.query, active: (ui.slash.active + (key === 'ArrowDown' ? 1 : -1) + count) % count });
     return;
   }
@@ -562,10 +772,12 @@ function onBlockKeydown(event, el) {
   }
   if (mod && !event.shiftKey && !event.altKey && key.toLowerCase() === 'd') { event.preventDefault(); duplicateBlock(b.id); }
 }
-document.addEventListener('dragstart', event => { const task = event.target.closest('[data-drag-task]'); const b = event.target.closest('[data-drag-block]'); if (task) { ui.draggedTask = task.dataset.dragTask; event.dataTransfer.setData('text/plain', ui.draggedTask); } if (b) { ui.draggedBlock = b.dataset.dragBlock; event.dataTransfer.setData('text/plain', ui.draggedBlock); } });
-document.addEventListener('dragover', event => { if (!event.target.closest) return; if (event.target.closest('[data-drop-status]') || (ui.draggedBlock && event.target.closest('[data-block-id]'))) event.preventDefault(); });
-document.addEventListener('drop', event => { const origin = event.target.closest ? event.target : event.target.parentElement; if (!ui.draggedBlock && !ui.draggedTask && !ui.draggedPage && origin?.closest('[data-edit-block]')) { event.preventDefault(); return; } const column = event.target.closest('[data-drop-status]'); const targetBlock = event.target.closest('[data-block-id]'); if (column && ui.draggedTask) { event.preventDefault(); const t = state.tasks.find(t => t.id === ui.draggedTask); if (t) { t.status = column.dataset.dropStatus; persist(); renderDatabase(); } } if (targetBlock && ui.draggedBlock) { event.preventDefault(); const list = current().blocks; const from = list.findIndex(b => b.id === ui.draggedBlock); const to = list.findIndex(b => b.id === targetBlock.dataset.blockId); if (from >= 0 && to >= 0) { remember(); const [item] = list.splice(from, 1); list.splice(to, 0, item); persist(); render(); } } ui.draggedTask = null; ui.draggedBlock = null; });
-document.addEventListener('dragend', () => { ui.draggedTask = null; ui.draggedBlock = null; });
+document.addEventListener('dragstart', event => { const row = event.target.closest('[data-drag-row]'); const b = event.target.closest('[data-drag-block]'); if (row) { ui.draggedRow = row.dataset.dragRow; event.dataTransfer.setData('text/plain', ui.draggedRow); } if (b) { ui.draggedBlock = b.dataset.dragBlock; event.dataTransfer.setData('text/plain', ui.draggedBlock); } });
+document.addEventListener('dragover', event => { if (!event.target.closest) return; if ((ui.draggedRow && event.target.closest('[data-drop-group],[data-drop-date],[data-row]')) || (ui.draggedBlock && event.target.closest('[data-block-id]'))) event.preventDefault(); });
+document.addEventListener('drop', event => { const origin = event.target.closest ? event.target : event.target.parentElement; if (!ui.draggedBlock && !ui.draggedRow && !ui.draggedPage && origin?.closest('[data-edit-block]')) { event.preventDefault(); return; } const place = ui.draggedRow && event.target.closest('[data-drop-group],[data-drop-date],[data-row]'); const targetBlock = event.target.closest('[data-block-id]'); if (place) { event.preventDefault(); dropDraggedRow(place); } if (targetBlock && ui.draggedBlock) { event.preventDefault(); const list = doc().blocks; const from = list.findIndex(b => b.id === ui.draggedBlock); const to = list.findIndex(b => b.id === targetBlock.dataset.blockId); if (from >= 0 && to >= 0) { remember(); const [item] = list.splice(from, 1); list.splice(to, 0, item); persist(); render(); } } ui.draggedRow = null; ui.draggedBlock = null; });
+document.addEventListener('dragend', () => { ui.draggedRow = null; ui.draggedBlock = null; });
+// Text typed into a cell is saved at once; the rows are sorted and filtered again when focus leaves them.
+document.addEventListener('focusout', event => { const root = event.target.closest?.('#database-results,#row-props'); if (root && ui.staleCells && !root.contains(event.relatedTarget)) setTimeout(() => { if (ui.staleCells) refreshDatabaseResults(); }, 0); });
 window.addEventListener('storage', event => { if (event.key === STORAGE_KEY || event.key === null) { persistenceBlocked = true; if ($('#save-state')) $('#save-state').innerHTML = '<span class="save-error">다른 탭 변경 · 새로고침 필요</span>'; toast('다른 탭의 최신 변경을 보호하기 위해 자동 저장을 멈췄습니다. 현재 편집 내용은 백업한 뒤 새로고침하세요.', true); } });
 document.addEventListener('contextmenu', event => {
   const row = event.target.closest('[data-sidebar-page]');

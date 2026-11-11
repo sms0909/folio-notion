@@ -16,6 +16,7 @@ export function sidebarSettings(state) {
     limit: [5, 10].includes(raw.limit) ? raw.limit : 1000,
   };
 }
+const viewIcons = { table: 'table', board: 'board', list: 'bullet', calendar: 'calendar', gallery: 'grid' };
 function pageTitle(p) { return p.title.trim() || '제목 없음'; }
 export function sidebarHTML(state, ui) {
   const prefs = ui.sidebarPrefs;
@@ -32,7 +33,7 @@ export function sidebarHTML(state, ui) {
         <button class="tree-toggle ${expanded ? 'expanded' : ''} ${!children ? 'leaf' : ''}" data-action="expand" data-id="${esc(p.id)}" aria-label="${title} 하위 페이지" aria-expanded="${expanded}">${icon('chevron')}</button>
         <button class="page-link" data-action="open" data-id="${esc(p.id)}" data-drag-page="${esc(p.id)}" draggable="true" aria-label="페이지 열기: ${title}" ${p.id === state.activeId ? 'aria-current="page"' : ''}>${icon(p.icon)}<span data-page-name="${esc(p.id)}">${title}</span></button>
         <button class="tree-menu" data-action="sidebar-page-menu" data-id="${esc(p.id)}" aria-label="페이지 메뉴: ${title}">${icon('more')}</button><button class="tree-add" data-action="subpage" data-id="${esc(p.id)}" aria-label="${title} 하위 페이지 추가">${icon('plus')}</button>
-      </div>${children && expanded ? `${p.type === 'database' ? `<div class="database-view-links" style="--depth:${depth + 1}"><button data-action="sidebar-db-view" data-id="${esc(p.id)}" data-view="table" aria-label="데이터베이스 보기: ${title} 표">${icon('table')}표 보기</button><button data-action="sidebar-db-view" data-id="${esc(p.id)}" data-view="board" aria-label="데이터베이스 보기: ${title} 보드">${icon('board')}보드 보기</button></div>` : ''}${tree(p.id, depth + 1)}` : ''}`;
+      </div>${children && expanded ? `${p.type === 'database' ? `<div class="database-view-links" style="--depth:${depth + 1}">${(state.databases[p.id]?.views || []).map(v => `<button data-action="sidebar-db-view" data-id="${esc(p.id)}" data-view="${esc(v.id)}" aria-label="데이터베이스 보기: ${title} ${esc(v.name)}">${icon(viewIcons[v.type] || 'table')}<span>${esc(v.name)} 보기</span></button>`).join('')}</div>` : ''}${tree(p.id, depth + 1)}` : ''}`;
     }).join('');
   };
   const headings = { recent: '최근 방문', favorites: '즐겨찾기', pages: '개인 페이지' };

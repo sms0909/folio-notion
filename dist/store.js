@@ -1,8 +1,7 @@
 import { validMarks, toMarkdown } from './richtext.js';
 import { CURRENT_VERSION, supportedVersions, migrate, keepBackup } from './migrate.js';
+import { projectDatabase, copyDatabase, validateDatabase, limits, statuses, priorities } from './database-model.js';
 export const STORAGE_KEY = 'folio.workspace.v1';
-export const statuses = ['시작 전', '진행 중', '완료'];
-export const priorities = ['높음', '보통', '낮음'];
 export const blockTypes = ['text', 'h1', 'h2', 'h3', 'bullet', 'numbered', 'todo', 'toggle', 'quote', 'callout', 'code', 'divider'];
 export const uid = () => crypto.randomUUID();
 export const block = (type = 'text', text = '', checked = false) => ({ id: uid(), type, text, checked });
@@ -19,27 +18,31 @@ export function initialWorkspace() {
   const wiki = makePage('팀 위키', { id: 'wiki', icon: 'book', blocks: [block('h1', '함께 만드는 지식'), block('text', '자주 찾는 정보와 팀의 일하는 방식을 한곳에 정리해요.'), block('h2', '우리가 일하는 방식'), block('bullet', '명확하게 기록하고, 편하게 공유합니다.'), block('bullet', '작은 실험으로 더 좋은 방법을 발견합니다.'), block('todo', '새로운 팀원 온보딩 문서 작성')] });
   const ideas = makePage('아이디어 노트', { id: 'ideas', icon: 'bulb', blocks: [block('h2', '아직 다듬어지지 않아도 괜찮아요.'), block('text', '지금 떠오른 생각을 기록해 보세요.'), block('bullet', '한 주를 돌아보는 나만의 루틴 만들기'), block('quote', '위대한 일은 작은 일들이 모여 이루어진다.')] });
   const meeting = makePage('주간 회의', { id: 'meeting', parentId: 'wiki', icon: 'calendar', blocks: [block('h2', '이번 주의 이야기'), block('text', '논의할 주제를 여기에 적어 주세요.'), block('todo', '다음 액션 정리하기')] });
-  return { version: CURRENT_VERSION, activeId: home.id, settings: { name: 'Goodus의 워크스페이스', theme: 'light' }, pages: [home, projects, wiki, ideas, meeting], tasks: [
+  return { version: CURRENT_VERSION, activeId: home.id, settings: { name: 'Goodus의 워크스페이스', theme: 'light' }, pages: [home, projects, wiki, ideas, meeting], databases: { projects: projectDatabase([
     { id: uid(), title: '브랜드 가이드 정리', status: '진행 중', priority: '높음', assignee: '나', date: '2026-10-24', note: '컬러, 타이포그래피, 컴포넌트 원칙을 한 문서로 정리합니다.' },
     { id: uid(), title: '워크스페이스 구조 잡기', status: '완료', priority: '보통', assignee: '나', date: '2026-10-20', note: '' },
     { id: uid(), title: '새로운 아이디어 모으기', status: '시작 전', priority: '보통', assignee: '', date: '2026-10-28', note: '' },
     { id: uid(), title: '10월 회고 작성', status: '시작 전', priority: '낮음', assignee: '나', date: '2026-10-30', note: '' },
-  ] };
+  ], {}, text => block('text', text)) } };
 }
 const isText = (value, max = 100000) => typeof value === 'string' && value.length <= max;
 const isId = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,100}$/.test(value);
 export function validateWorkspace(data) {
-  if (!data || !supportedVersions.includes(data.version) || !Array.isArray(data.pages) || data.pages.length < 1 || data.pages.length > 1000 || !Array.isArray(data.tasks) || data.tasks.length > 5000) throw new Error('올바른 Folio 백업 파일이 아닙니다.');
+  if (!data || !supportedVersions.includes(data.version) || !Array.isArray(data.pages) || data.pages.length < 1 || data.pages.length > 1000 || (data.version < 3 && (!Array.isArray(data.tasks) || data.tasks.length > 5000))) throw new Error('올바른 Folio 백업 파일이 아닙니다.');
   if (!data.settings || !isText(data.settings.name, 120) || !['light', 'dark'].includes(data.settings.theme)) throw new Error('워크스페이스 설정이 올바르지 않습니다.');
   if (data.workspaceId !== undefined && !isId(data.workspaceId)) throw new Error('워크스페이스 식별자가 올바르지 않습니다.');
   const ids = new Set(); const blocks = new Set();
+  // Block ids are unique across the whole workspace, database rows included.
+  const checkBlocks = list => {
+    for (const b of list) {
+      if (!b || !isId(b.id) || blocks.has(b.id) || !blockTypes.includes(b.type) || !isText(b.text) || typeof b.checked !== 'boolean' || !(b.indent === undefined || (Number.isInteger(b.indent) && b.indent >= 0 && b.indent <= 6)) || !(b.open === undefined || typeof b.open === 'boolean') || !(b.marks === undefined || validMarks(b.marks, b.text.length))) throw new Error('블록 데이터가 올바르지 않습니다.');
+      blocks.add(b.id);
+    }
+  };
   for (const p of data.pages) {
     if (!isId(p.id) || ids.has(p.id) || !isText(p.title, 500) || !['document', 'home', 'database'].includes(p.type) || !isText(p.icon, 30) || typeof p.favorite !== 'boolean' || typeof p.deleted !== 'boolean' || !Array.isArray(p.blocks) || p.blocks.length > 10000 || !(p.parentId === null || isId(p.parentId)) || !isText(p.updatedAt, 100) || !(p.deletedBatch == null || isId(p.deletedBatch))) throw new Error('페이지 데이터가 올바르지 않습니다.');
     ids.add(p.id);
-    for (const b of p.blocks) {
-      if (!isId(b.id) || blocks.has(b.id) || !blockTypes.includes(b.type) || !isText(b.text) || typeof b.checked !== 'boolean' || !(b.indent === undefined || (Number.isInteger(b.indent) && b.indent >= 0 && b.indent <= 6)) || !(b.open === undefined || typeof b.open === 'boolean') || !(b.marks === undefined || validMarks(b.marks, b.text.length))) throw new Error('블록 데이터가 올바르지 않습니다.');
-      blocks.add(b.id);
-    }
+    checkBlocks(p.blocks);
   }
   const byId = new Map(data.pages.map(p => [p.id, p]));
   for (const p of data.pages) {
@@ -51,12 +54,18 @@ export function validateWorkspace(data) {
     if (!p.deleted && p.parentId && byId.get(p.parentId).deleted) throw new Error('삭제된 상위 페이지에 활성 페이지가 있습니다.');
   }
   const taskIds = new Set();
-  for (const t of data.tasks) {
+  for (const t of data.version < 3 ? data.tasks : []) {
     if (!isId(t.id) || taskIds.has(t.id) || !isText(t.title, 500) || !statuses.includes(t.status) || !priorities.includes(t.priority) || !isText(t.assignee, 100) || !isText(t.note) || !isText(t.date, 10) || (t.date && (!/^\d{4}-\d{2}-\d{2}$/.test(t.date) || Number.isNaN(Date.parse(t.date)) || new Date(t.date).toISOString().slice(0, 10) !== t.date))) throw new Error('작업 데이터가 올바르지 않습니다.');
     taskIds.add(t.id);
   }
   if (!data.pages.some(p => !p.deleted)) throw new Error('활성 페이지가 하나 이상 필요합니다.');
   const normalized = migrate(structuredClone(data));
+  const fail = () => { throw new Error('데이터베이스 데이터가 올바르지 않습니다.'); };
+  const dbs = normalized.databases; const owners = normalized.pages.filter(p => p.type === 'database');
+  if (!dbs || typeof dbs !== 'object' || Array.isArray(dbs) || owners.length > limits.databases || Object.keys(dbs).length !== owners.length) fail();
+  const rowIds = new Set();
+  for (const p of owners) { if (!Object.hasOwn(dbs, p.id)) fail(); validateDatabase(dbs[p.id], checkBlocks, rowIds); }
+  delete normalized.tasks;
   if (!normalized.pages.some(p => p.id === normalized.activeId && !p.deleted)) normalized.activeId = normalized.pages.find(p => !p.deleted).id;
   return normalized;
 }
@@ -76,6 +85,7 @@ export function duplicatePage(state, source) {
   const copy = structuredClone(source);
   const suffix = ' (복사본)';
   Object.assign(copy, { id: uid(), title: `${(source.title || '제목 없음').slice(0, 500 - suffix.length)}${suffix}`, favorite: false, updatedAt: new Date().toISOString(), blocks: copy.blocks.map(b => ({ ...b, id: uid() })) });
+  if (source.type === 'database') state.databases[copy.id] = copyDatabase(state.databases[source.id]);
   state.pages.push(copy); state.activeId = copy.id; return copy;
 }
 export function descendants(state, id) {

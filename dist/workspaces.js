@@ -34,7 +34,7 @@ export function switchLocalWorkspace(state, targetId, newName = null) {
     if (entries.length >= 20) throw new Error('워크스페이스는 최대 20개까지 만들 수 있습니다.');
     if (entries.some(entry => entry.snapshot.settings.name === name)) throw new Error('같은 이름의 워크스페이스가 있습니다.');
     const snapshot = initialWorkspace();
-    snapshot.settings.name = name; snapshot.tasks = []; snapshot.workspaceId = `workspace-${uid()}`;
+    snapshot.settings.name = name; for (const db of Object.values(snapshot.databases)) db.rows = []; snapshot.workspaceId = `workspace-${uid()}`;
     target = { id: snapshot.workspaceId, snapshot }; entries.push(target);
   } else target = entries.find(entry => entry.id === targetId);
   if (!target) throw new Error('워크스페이스를 찾지 못했습니다.');
