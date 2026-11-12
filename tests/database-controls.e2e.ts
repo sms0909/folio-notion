@@ -66,17 +66,17 @@ test('board drag updates status in the table and survives reload', async ({ scre
   await expect(screen.getByLabel('브랜드 가이드 정리 상태')).toHaveValue('완료');
 });
 
-test('account dialog shows the signed-in user and logs out without clearing local work', async ({ screen, browser }) => {
+test('account dialog shows the signed-in user; logging out saves the work and leaves no copy in the browser', async ({ screen, browser }) => {
   await screen.getByLabel('브랜드 가이드 정리 담당자').fill('민수');
   await screen.getByLabel('브랜드 가이드 정리 담당자').press('Tab');
   await screen.getByRole('button', '계정', { exact: true }).tap();
   const dialog = screen.getByRole('dialog', '계정 및 로그인');
   await expect(dialog).toContainText('@folio.test · 멤버');
-  await expect(screen.getByText('로그아웃해도 이 브라우저의 문서는 삭제되지 않습니다.', { exact: true })).toBeVisible();
+  await expect(screen.getByText('문서는 서버에 저장됩니다.', { exact: true })).toBeVisible();
   await expect(dialog.getByRole('link', '관리자 화면', { exact: true })).toHaveCount(0);
   await dialog.getByRole('button', '로그아웃', { exact: true }).tap();
   await expect(screen.getByRole('heading', 'Folio에 로그인')).toBeVisible();
-  expect(await browser.evaluate(() => (localStorage.getItem('folio.workspace.v1') ?? '').includes('민수'))).toBe(true);
+  expect(await browser.evaluate(() => localStorage.getItem('folio.mirror.v1'))).toBe(null);
 });
 
 test('account dialog keyboard reaches logout and closes the focus loop', async ({ screen, browser, app }) => {

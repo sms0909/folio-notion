@@ -6,7 +6,7 @@ import { join } from 'node:path';
 
 beforeEach(async ({ app }) => { await app.open('/'); });
 
-const stored = (browser: any) => browser.evaluate(() => JSON.parse(localStorage.getItem('folio.workspace.v1')!));
+const stored = (browser: any) => browser.evaluate(() => JSON.parse(localStorage.getItem('folio.mirror.v1')!));
 const projects = async (browser: any) => (await stored(browser)).databases.projects;
 const names = (browser: any) => browser.evaluate(() => [...document.querySelectorAll('tbody .task-name > span:first-of-type')].map(el => el.textContent));
 const tool = (screen: any, name: string) => screen.getByRole('button', name, { exact: true });
@@ -25,13 +25,22 @@ async function addView(screen: any, type: string) {
 test('version 2 tasks become database rows with the note as a block', async ({ screen, browser }) => {
   await screen.getByLabel('브랜드 가이드 정리 담당자').fill('저장');
   await browser.evaluate(() => {
-    const data = JSON.parse(localStorage.getItem('folio.workspace.v1')!);
-    data.version = 2; delete data.databases;
+    // What a browser that used Folio before it had a server still holds.
+    const data = JSON.parse(localStorage.getItem('folio.mirror.v1')!);
+    data.version = 2; delete data.databases; data.settings.name = '옛 공간';
     data.tasks = [{ id: 'old-task', title: '옛 작업', status: '진행 중', priority: '높음', assignee: '지수', date: '2026-03-02', note: '옛 메모' }];
     data.settings.database = { view: 'board', status: 'all', sort: 'asc' };
     localStorage.setItem('folio.workspace.v1', JSON.stringify(data));
   });
   await browser.reload();
+  await screen.getByRole('button', '설정', { exact: true }).tap();
+  await screen.getByRole('button', '서버로 옮기기').tap();
+  await expect(browser.locator('#toast')).toContainText('워크스페이스 1개를 서버로 옮겼습니다.');
+  await expect(screen.getByRole('button', '서버로 옮기기')).toHaveCount(0);
+  await screen.getByRole('button', '닫기', { exact: true }).tap();
+  await screen.getByRole('button', '워크스페이스 전환').tap();
+  await screen.getByRole('menuitem', '워크스페이스 선택: 옛 공간', { exact: true }).tap();
+  await expect(screen.getByTestId('workspace-name')).toHaveText('옛 공간');
   await expect(screen.getByRole('tab', '보드', { exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(screen.getByRole('region', '진행 중')).toContainText('옛 작업');
   await screen.getByRole('tab', '표', { exact: true }).tap();

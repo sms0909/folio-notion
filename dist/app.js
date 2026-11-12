@@ -1,5 +1,6 @@
 import { sidebarHTML, sidebarSettings } from './sidebar-view.js';
-import { listWorkspaces, switchLocalWorkspace, workspaceId } from './workspaces.js';
+import * as sync from './sync.js';
+import { legacyData, moveLegacy } from './legacy.js';
 import { databaseHTML as renderDatabaseHTML, databaseResults, countText, totalText, rowFormHTML, rowPropsHTML, filterPanelHTML, sortPanelHTML, propsPanelHTML, viewPanelHTML, josa, rowName } from './database-view.js';
 import { limits, propertyTypes, viewTypes, optionColors, propOf, operators, activeView, quickFilterProp, groupProp, dateProp, cleanValue, valueOf, rowText, makeRow, addView, makeDatabase, visibleRows, isSorted, calcsFor, total, shiftMonth, changeType, repair, renameOption } from './database-model.js';
 import { icon } from './icons.js';
@@ -7,18 +8,20 @@ import { session, logout } from './session.js';
 import { HOLD, MAX_TEXT, listTypes, staticTypes, markdownShortcut, indentOf, numbering, hiddenBlocks, subtreeEnd, shiftIndent, slashMatches, readText, selectionOffsets, setSelection, caretOnEdge } from './blocks.js';
 import * as history from './history.js';
 import { colors, safeHref, normalizeMarks, toggleMark, covers, marksAt, marksIn, sliceMarks, shiftMarks, spliceMarks, renderInline, readInline, nodeMarks, inlineShortcut } from './richtext.js';
-import { block, uid, blockTypes, loadWorkspace, initialWorkspace, saveWorkspace, STORAGE_KEY, createPage, duplicatePage, trashPage, restorePage, descendants, movePage, validateWorkspace, pageMarkdown, covers as pageCovers, TEMPLATE_LIMIT, copyBlocks, purgePages } from './store.js';
-import { KEEP, versions, saveVersion, dropVersions } from './page-history.js';
+import { block, uid, blockTypes, createPage, duplicatePage, trashPage, restorePage, descendants, movePage, validateWorkspace, pageMarkdown, covers as pageCovers, TEMPLATE_LIMIT, copyBlocks, purgePages } from './store.js';
 import { MAX_IMPORT_SIZE, markdownToPage, parseCSV, csvToDatabase, databaseCSV, pageHTML as exportHTML } from './import-export.js';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
-let state; let startupError = '';
-try { state = loadWorkspace(); } catch { state = initialWorkspace(); startupError = '저장된 데이터를 읽지 못했습니다. 기존 저장 파일을 덮어쓰지 않도록 백업을 먼저 확인해 주세요.'; }
-let persistenceBlocked = !!startupError;
-let lastSavedRaw = null;
-try { lastSavedRaw = localStorage.getItem(STORAGE_KEY); } catch {}
+// The workspace arrives with the page; see sync.js.
+const started = sync.start();
+let state = started.state;
+// How saving is going: 'saved', 'saving' or 'error'.
+let saveKind = started.error ? 'error' : 'saved';
+const KEEP = 30;
+// A message to show after the page is loaded again.
+const NOTICE_KEY = 'folio.notice';
 const savedSidebar = sidebarSettings(state);
 const thisMonth = () => { const now = new Date(); return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`; };
 // `row` is `{ db, id }` while a database row is open as a page; `query` and `month` belong to the database on screen.
@@ -43,14 +46,16 @@ function toast(message, error = false) {
 // Pages edited since their last saved version. A version is saved when the page is left
 // and after every ten minutes of editing.
 const SNAP_EVERY = 600_000;
-function keepVersion(page, manual = false) {
-  const result = saveVersion(workspaceId(state), page); ui.dirty.delete(page.id); ui.snapAt.set(page.id, Date.now());
-  if (result.pruned) toast(`저장 공간이 부족해 오래된 페이지 기록 ${result.pruned}개를 지웠습니다.`, true);
-  else if (manual) toast(result.saved ? '현재 버전을 저장했습니다.' : result.same ? '마지막 버전과 내용이 같습니다.' : '페이지 기록을 저장하지 못했습니다.', !result.saved && !result.same);
-  return result;
+// The version holds the page as it is right now; the server answers later. Returns that answer.
+function keepVersion(page, manual = false, leaving = false) {
+  ui.dirty.delete(page.id); ui.snapAt.set(page.id, Date.now());
+  const done = sync.saveVersion(page.id, { title: page.title, blocks: page.blocks }, leaving).catch(() => ({ saved: false, same: false }));
+  if (manual) done.then(result => toast(result.saved ? '현재 버전을 저장했습니다.' : result.same ? '마지막 버전과 내용이 같습니다.' : '페이지 기록을 저장하지 못했습니다.', !result.saved && !result.same));
+  return done;
 }
-function flushVersions() {
-  for (const id of [...ui.dirty]) { const page = state.pages.find(p => p.id === id && !p.deleted); if (page) keepVersion(page); else ui.dirty.delete(id); }
+// `leaving` is set while the page is being closed.
+function flushVersions(leaving = false) {
+  for (const id of [...ui.dirty]) { const page = state.pages.find(p => p.id === id && !p.deleted); if (page) keepVersion(page, false, leaving === true); else ui.dirty.delete(id); }
 }
 function trackEdit() {
   const page = current(); if (openRow() || page.type === 'database') return;
@@ -60,8 +65,32 @@ function trackEdit() {
 }
 function persist(touch = true) {
   if (touch) { current().updatedAt = new Date().toISOString(); trackEdit(); }
-  try { if (persistenceBlocked) throw new Error(); if (localStorage.getItem(STORAGE_KEY) !== lastSavedRaw) { persistenceBlocked = true; throw new Error(); } saveWorkspace(state); lastSavedRaw = localStorage.getItem(STORAGE_KEY); if ($('#save-state')) $('#save-state').innerHTML = `${icon('check')}<span>저장됨</span>`; return true; }
-  catch { if ($('#save-state')) $('#save-state').innerHTML = '<span class="save-error">저장 안 됨 · 백업 필요</span>'; if (!persist.warned) { toast('브라우저에 저장하지 못했습니다. 설정에서 백업을 내보내 주세요.', true); persist.warned = true; } return false; }
+  if (sync.save(state)) return true;
+  showSaveState('error'); return false;
+}
+const saveStateHTML = () => saveKind === 'error' ? `<span class="save-error">${esc(sync.failureText() || '저장 안 됨')}</span>` : saveKind === 'saving' ? '<span>저장 중…</span>' : `${icon('check')}<span>저장됨</span>`;
+// Called by sync.js whenever saving starts, succeeds or fails. `message` explains a refusal.
+function showSaveState(kind, message = '') {
+  saveKind = kind;
+  if ($('#save-state')) $('#save-state').innerHTML = saveStateHTML();
+  if ($('#database-save-state')) $('#database-save-state').textContent = kind === 'error' ? sync.failureText() || '저장 안 됨' : kind === 'saving' ? '저장 중…' : '모든 변경 사항 저장됨';
+  if (kind === 'saved') persist.warned = false;
+  else if (kind === 'error' && !persist.warned) { persist.warned = true; toast(message || '서버에 저장하지 못했습니다. 연결되면 다시 저장합니다. 중요한 내용은 설정에서 백업을 내보내 주세요.', true); }
+}
+// The address shows the open page (and row), so links can be shared and Back works.
+function addressOf() { const row = openRow(); return `/p/${current().id}${row ? `?row=${encodeURIComponent(row.id)}` : ''}`; }
+function syncAddress() {
+  const address = addressOf(); if (location.pathname + location.search === address) { syncAddress.ready = true; return; }
+  if (syncAddress.ready) window.history.pushState(null, '', address); else window.history.replaceState(null, '', address);
+  syncAddress.ready = true;
+}
+// Opens what the address names. Returns false when that page does not exist (any more).
+function openAddress() {
+  const id = location.pathname.match(/^\/p\/([^/]+)$/)?.[1]; if (!id) return true;
+  const page = state.pages.find(p => p.id === id && !p.deleted); if (!page) return false;
+  const rowId = new URLSearchParams(location.search).get('row');
+  state.activeId = page.id; ui.row = rowId && state.databases[page.id]?.rows.some(r => r.id === rowId) ? { db: page.id, id: rowId } : null;
+  return true;
 }
 function saveSidebar() {
   ui.sidebarPrefs.collapsed = ui.collapsed;
@@ -138,7 +167,7 @@ function render() {
   document.documentElement.style.setProperty('--sidebar-width', `${ui.sidebarPrefs.width}px`);
   document.documentElement.dataset.theme = state.settings.theme;
   document.title = `${row ? rowName(row) : pageName(page)} — Folio`;
-  const footer = `<footer class="page-footer"><span class="footer-logo">f.</span><span>조금 더 정리된 생각, 조금 더 가벼운 하루.</span><span class="footer-shortcut">${icon('shield')}로컬 자동 저장</span></footer>`;
+  const footer = `<footer class="page-footer"><span class="footer-logo">f.</span><span>조금 더 정리된 생각, 조금 더 가벼운 하루.</span><span class="footer-shortcut">${icon('shield')}자동 저장</span></footer>`;
   const content = row ? `<div class="page-spacer"></div><article class="page-content row-page"><button class="row-back" data-action="close-row" aria-label="데이터베이스로 돌아가기">${icon('arrow')}<span>${esc(pageName(page))}</span></button><div class="page-icon">${icon('file')}</div><div class="page-title-line"><input id="row-title" aria-label="${esc(db.itemName)} 제목" value="${esc(row.title)}" maxlength="500" placeholder="제목 없음" spellcheck="false"></div><div id="row-props" class="row-props" role="group" aria-label="${esc(db.itemName)} 속성">${rowPropsHTML(db, row)}</div>
     ${editor(row)}<div class="document-bottom"><button class="button danger" data-action="delete-row" data-id="${esc(row.id)}">${icon('trash')}${esc(db.itemName)} 삭제</button><span>${esc(pageName(page))}의 ${esc(db.itemName)}</span></div>${footer}</article>`
     : `${coverHTML(page)}
@@ -146,12 +175,12 @@ function render() {
     ${page.type !== 'database' ? editor(page) : ''}${page.type === 'home' ? quickLinks() : ''}${shown ? `<section id="database" class="database" aria-label="${esc(pageName(dbPage(shown)))} 관리"></section>` : ''}
     ${backlinksHTML(page.id)}${page.type === 'document' ? `<div class="document-bottom"><span class="document-buttons"><button class="button" data-action="subpage" data-id="${esc(page.id)}">${icon('plus')}하위 페이지 추가</button><button class="button" data-action="new-database" data-id="${esc(page.id)}">${icon('table')}데이터베이스 추가</button></span><span>기록은 생각을 선명하게 만듭니다.</span></div>` : ''}${footer}</article>`;
   $('#app').innerHTML = `${sidebar()}${ui.sidebar ? '<div class="mobile-scrim" data-action="close-sidebar"></div>' : ''}<main class="main-shell ${ui.collapsed ? 'expanded-main' : ''}">
-    <header class="topbar"><div class="topbar-left"><button class="icon-button sidebar-open" data-action="open-sidebar" aria-label="사이드바 열기">${icon('menu')}</button><div class="breadcrumbs">${breadcrumb(page)}${row ? `<span class="crumb-sep">/</span><span class="crumb crumb-current">${icon('file')}<span id="row-crumb">${esc(rowName(row))}</span></span>` : ''}</div></div><div class="topbar-right"><span id="save-state" class="save-state">${icon('check')}<span>저장됨</span></span>${row ? '' : `<button class="icon-button favorite-toggle ${page.favorite ? 'is-favorite' : ''}" data-action="favorite" aria-label="${page.favorite ? '즐겨찾기 해제' : '즐겨찾기 추가'}">${icon('star')}</button>`}<button class="button export-button" data-action="export-page">${icon('download')}내보내기</button>${row ? '' : `<button class="icon-button" data-action="page-menu" aria-label="페이지 더보기">${icon('more')}</button>`}</div></header>
+    <header class="topbar"><div class="topbar-left"><button class="icon-button sidebar-open" data-action="open-sidebar" aria-label="사이드바 열기">${icon('menu')}</button><div class="breadcrumbs">${breadcrumb(page)}${row ? `<span class="crumb-sep">/</span><span class="crumb crumb-current">${icon('file')}<span id="row-crumb">${esc(rowName(row))}</span></span>` : ''}</div></div><div class="topbar-right"><span id="save-state" class="save-state">${saveStateHTML()}</span>${row ? '' : `<button class="icon-button favorite-toggle ${page.favorite ? 'is-favorite' : ''}" data-action="favorite" aria-label="${page.favorite ? '즐겨찾기 해제' : '즐겨찾기 추가'}">${icon('star')}</button>`}<button class="button export-button" data-action="export-page">${icon('download')}내보내기</button>${row ? '' : `<button class="icon-button" data-action="page-menu" aria-label="페이지 더보기">${icon('more')}</button>`}</div></header>
     <div class="main-scroll">${content}</div></main>`;
   renderDatabase(); if (ui.menu) renderPageMenu(); if (ui.blockMenu) renderBlockMenu(ui.blockMenu);
-  if (persistenceBlocked || persist.warned) $('#save-state').innerHTML = '<span class="save-error">저장 안 됨 · 백업 필요</span>';
+  syncAddress();
 }
-const dbContext = () => ({ query: ui.query, month: ui.month, saved: !persistenceBlocked && !persist.warned, heading: shownDbId() === 'projects' });
+const dbContext = () => ({ query: ui.query, month: ui.month, saved: saveKind !== 'error', heading: shownDbId() === 'projects' });
 const pageRef = id => ({ id, title: pageName(dbPage(id)) });
 const focusKey = key => $$('[data-focus]').find(el => el.dataset.focus === key);
 // Redrawing replaces the controls inside `root`; focus returns to the control with the same `data-focus` key.
@@ -180,7 +209,7 @@ function refreshDatabaseSummary() {
   const db = shownDb(); if (!db) return;
   if ($('#database-count')) $('#database-count').textContent = countText(db, ui.query);
   if ($('.database-total')) $('.database-total').textContent = totalText(db);
-  if ($('#database-save-state')) $('#database-save-state').textContent = persistenceBlocked || persist.warned ? '저장 안 됨 · 백업 필요' : '모든 변경 사항 저장됨';
+  if ($('#database-save-state')) $('#database-save-state').textContent = saveKind === 'error' ? sync.failureText() || '저장 안 됨' : saveKind === 'saving' ? '저장 중…' : '모든 변경 사항 저장됨';
 }
 // While a cell is being typed in, only the numbers under the table follow along.
 function refreshTotals() {
@@ -327,7 +356,7 @@ function onPanelChange(el) {
 function openAccount() {
   const { user } = session;
   const admin = user.role === 'admin';
-  showModal('account', '계정 및 로그인', `<div class="account-summary">${icon('user')}<div><strong>${esc(user.name || user.email)}</strong><p>${esc(user.email)} · ${admin ? '관리자' : '멤버'}</p></div></div><p class="dialog-description">Google 계정과 OTP로 로그인했습니다. 계정을 바꾸려면 로그아웃한 뒤 다시 로그인하세요.</p><div class="privacy-note">${icon('shield')}<div><strong>로그아웃해도 이 브라우저의 문서는 삭제되지 않습니다.</strong><p>문서는 아직 이 브라우저에 저장됩니다. 공용 기기에서는 백업 후 브라우저 데이터를 관리하세요.</p></div></div><div class="account-actions">${admin ? '<a class="button" href="/admin">관리자 화면</a>' : ''}<button type="button" class="button primary" data-action="logout">로그아웃</button></div>`);
+  showModal('account', '계정 및 로그인', `<div class="account-summary">${icon('user')}<div><strong>${esc(user.name || user.email)}</strong><p>${esc(user.email)} · ${admin ? '관리자' : '멤버'}</p></div></div><p class="dialog-description">Google 계정과 OTP로 로그인했습니다. 계정을 바꾸려면 로그아웃한 뒤 다시 로그인하세요.</p><div class="privacy-note">${icon('shield')}<div><strong>문서는 서버에 저장됩니다.</strong><p>로그아웃하면 이 브라우저에 남은 사본을 지웁니다. 다시 로그인하면 어느 기기에서든 이어서 쓸 수 있습니다.</p></div></div><div class="account-actions">${admin ? '<a class="button" href="/admin">관리자 화면</a>' : ''}<button type="button" class="button primary" data-action="logout">로그아웃</button></div>`);
 }
 function refreshSidebar() { const holder = document.createElement('div'); holder.innerHTML = sidebar(); $('.sidebar').replaceWith(holder.firstElementChild); }
 function updateTitleUI() { $$('[data-page-name]').filter(el => el.dataset.pageName === current().id).forEach(el => { el.textContent = pageName(current()); }); document.title = `${pageName(current())} — Folio`; }
@@ -350,7 +379,7 @@ function renderPageMenu(pageId = current().id, anchor = null) {
   const item = (action, glyph, label) => `<button role="menuitem" data-action="${action}" data-id="${id}">${icon(glyph)}${label}</button>`;
   const check = (action, glyph, label, on) => `<button role="menuitemcheckbox" aria-checked="${!!on}" data-action="${action}" data-id="${id}">${icon(glyph)}${label}<span class="menu-check">${icon('check')}</span></button>`;
   const el = document.createElement('div'); el.className = 'popover page-menu'; el.setAttribute('role', 'menu');
-  el.innerHTML = `<div class="menu-caption">${esc(pageName(page))}</div>${item('rename-page', 'text', '이름 바꾸기')}${item('sidebar-favorite', 'star', page.favorite ? '즐겨찾기에서 제거' : '즐겨찾기에 추가')}${item('duplicate', 'copy', '페이지 복제')}${item('move-page', 'file', '페이지 이동')}${item('sibling-up', 'sort', '위로 이동')}${item('sibling-down', 'sort', '아래로 이동')}${item('subpage', 'plus', '하위 페이지 추가')}
+  el.innerHTML = `<div class="menu-caption">${esc(pageName(page))}</div>${item('rename-page', 'text', '이름 바꾸기')}${item('sidebar-favorite', 'star', page.favorite ? '즐겨찾기에서 제거' : '즐겨찾기에 추가')}${item('duplicate', 'copy', '페이지 복제')}${item('copy-link', 'external', '링크 복사')}${item('move-page', 'file', '페이지 이동')}${item('sibling-up', 'sort', '위로 이동')}${item('sibling-down', 'sort', '아래로 이동')}${item('subpage', 'plus', '하위 페이지 추가')}
     <div class="menu-divider"></div>${check('toggle-full-width', 'grid', '전체 너비', page.fullWidth)}${check('toggle-small-text', 'text', '작은 글씨', page.smallText)}${isDb ? '' : item('page-history', 'clock', '페이지 기록') + item('save-template', 'template', '템플릿으로 저장')}
     <div class="menu-divider"></div>${item('export-page', 'download', 'Markdown 내보내기')}${item('export-html', 'download', 'HTML 내보내기')}${isDb ? item('export-csv', 'download', 'CSV 내보내기') : ''}${item('print-page', 'external', '인쇄')}
     <div class="menu-divider"></div><button class="danger" role="menuitem" data-action="delete-page" data-id="${id}">${icon('trash')}휴지통으로 이동</button>`;
@@ -381,22 +410,45 @@ function coverPicker(anchor) {
 }
 function openWorkspaceMenu(anchor) {
   removePopovers();
-  let workspaces;
-  try { workspaces = listWorkspaces(state); } catch (error) { toast(error.message, true); return; }
+  const workspaces = sync.workspace.list.map(w => w.id === sync.workspace.id ? { ...w, name: state.settings.name } : w);
   const el = document.createElement('div'); el.className = 'popover workspace-menu'; el.setAttribute('role', 'menu');
-  el.innerHTML = `<div class="menu-caption">이 브라우저의 워크스페이스</div>${workspaces.map(w => `<button role="menuitem" data-action="switch-workspace" data-workspace="${esc(w.id)}" aria-label="워크스페이스 선택: ${esc(w.name)}"><span class="workspace-avatar">${esc(w.name.slice(0, 1))}</span><span>${esc(w.name)}</span>${w.id === workspaceId(state) ? icon('check') : ''}</button>`).join('')}<div class="menu-divider"></div><button role="menuitem" data-action="new-workspace">${icon('plus')}워크스페이스 만들기</button><button role="menuitem" data-action="settings">${icon('settings')}워크스페이스 설정</button><button role="menuitem" data-action="account">${icon('user')}계정 관리</button>${session.user.role === 'admin' ? `<a role="menuitem" href="/admin">${icon('shield')}관리자 화면</a>` : ''}<button role="menuitem" data-action="logout">${icon('external')}로그아웃</button>`;
+  el.innerHTML = `<div class="menu-caption">내 워크스페이스</div>${workspaces.map(w => `<button role="menuitem" data-action="switch-workspace" data-workspace="${esc(w.id)}" aria-label="워크스페이스 선택: ${esc(w.name)}"><span class="workspace-avatar">${esc(w.name.slice(0, 1))}</span><span>${esc(w.name)}</span>${w.id === sync.workspace.id ? icon('check') : ''}</button>`).join('')}<div class="menu-divider"></div><button role="menuitem" data-action="new-workspace">${icon('plus')}워크스페이스 만들기</button><button role="menuitem" data-action="settings">${icon('settings')}워크스페이스 설정</button><button role="menuitem" data-action="account">${icon('user')}계정 관리</button>${session.user.role === 'admin' ? `<a role="menuitem" href="/admin">${icon('shield')}관리자 화면</a>` : ''}<button role="menuitem" data-action="logout">${icon('external')}로그아웃</button>`;
   document.body.append(el); const bounds = anchor.getBoundingClientRect(); el.style.left = `${Math.min(bounds.left, innerWidth - 300)}px`; el.style.top = `${bounds.bottom + 7}px`;
 }
-function activateWorkspace(id, name = null) {
-  flushVersions();
-  if (!persist(false)) { toast('현재 공간을 저장하지 못해 전환하지 않았습니다. 먼저 백업해 주세요.', true); return; }
+// Opens another workspace (or makes one called `name`). The page is loaded again with it.
+async function activateWorkspace(id, name = null) {
+  if (id === sync.workspace.id) { removePopovers(); return; }
+  if (activateWorkspace.busy) return;
+  activateWorkspace.busy = true;
   try {
-    const next = switchLocalWorkspace(state, id, name);
-    state = next; history.clearHistory(); ui.dirty.clear(); ui.snapAt.clear(); lastSavedRaw = localStorage.getItem(STORAGE_KEY); persistenceBlocked = false; persist.warned = false;
-    const prefs = sidebarSettings(state); ui.sidebarPrefs = prefs; ui.expanded = new Set(prefs.expanded); ui.collapsed = prefs.collapsed; ui.sidebar = false;
-    ui.query = ''; ui.row = null;
-    closeModal(false); removePopovers(); render(); toast('워크스페이스를 전환했습니다.');
-  } catch (error) { toast(error.message || '저장 공간이 부족해 전환하지 않았습니다.', true); }
+    flushVersions();
+    if (!await sync.flush()) { toast('현재 공간을 저장하지 못해 전환하지 않았습니다. 연결을 확인하거나 먼저 백업해 주세요.', true); return; }
+    if (name !== null) id = await sync.createWorkspace({ name });
+    try { sessionStorage.setItem(NOTICE_KEY, '워크스페이스를 전환했습니다.'); } catch {}
+    await sync.openWorkspace(id);
+  } catch (error) { try { sessionStorage.removeItem(NOTICE_KEY); } catch {} toast(error.message || '워크스페이스를 전환하지 못했습니다.', true); }
+  finally { activateWorkspace.busy = false; }
+}
+// Puts a newer state from the server on screen, keeping the caret where it was.
+function adopt(next) {
+  const here = state.activeId; const row = ui.row;
+  state = next;
+  if (state.pages.some(p => p.id === here && !p.deleted)) state.activeId = here;
+  ui.row = row && state.databases[row.db]?.rows.some(r => r.id === row.id) ? row : null;
+  showAdopted();
+}
+// Redrawing waits while a dialog or menu is open, text is being composed, or a field is being typed in.
+function showAdopted() {
+  clearTimeout(showAdopted.timer);
+  const focus = document.activeElement;
+  const active = focus?.closest?.('[data-edit-block]');
+  if (ui.modal || $('.popover') || ui.composing || (!active && focus?.matches?.('input, textarea, select, [contenteditable="true"]'))) { showAdopted.timer = setTimeout(showAdopted, 400); return; }
+  const caret = active ? { id: active.dataset.editBlock, ...selectionOffsets(active) } : null;
+  const scroll = $('.main-scroll')?.scrollTop ?? 0;
+  render();
+  if ($('.main-scroll')) $('.main-scroll').scrollTop = scroll;
+  const el = caret && $(`[data-edit-block="${CSS.escape(caret.id)}"]`);
+  if (el) { el.focus(); if (caret.start !== undefined) setSelection(el, caret.start, caret.end); }
 }
 function sectionMenu(key, anchor) {
   removePopovers(); const el = document.createElement('div'); el.className = 'popover page-menu'; el.setAttribute('role', 'menu');
@@ -455,8 +507,21 @@ function openSearch(library = false) {
   showModal(library ? 'library' : 'search', library ? '전체 페이지' : '무엇을 찾고 있나요?', `<label class="search-main">${icon('search')}<input type="search" aria-label="워크스페이스 검색" placeholder="페이지와 내용 검색…" autofocus><kbd>ESC</kbd></label><div class="search-filters"><label>범위<select aria-label="검색 범위"><option value="all">제목과 내용</option><option value="title">제목만</option></select></label><label>정렬<select aria-label="검색 정렬"><option value="recent" ${!library ? 'selected' : ''}>최근 방문순</option><option value="updated">최근 수정순</option><option value="title" ${library ? 'selected' : ''}>이름순</option></select></label></div><div id="search-results"></div>`, 'search-modal');
   $('#search-results').innerHTML = searchResults();
 }
+// Documents this browser kept before there was a server, offered for moving.
+function legacyHTML() {
+  const list = legacyData(); if (!list) return '';
+  return `<div class="import-files" id="legacy-move"><strong>이 브라우저에 있던 문서</strong><p>서버에 저장하기 전에 이 브라우저에서 쓰던 워크스페이스 ${list.length}개(${esc(list.map(w => `${w.name} · 페이지 ${w.pages}개`).join(', '))})가 남아 있습니다. 서버로 옮기면 새 워크스페이스로 추가되고, 이 브라우저의 원본은 그대로 둡니다.</p><div class="backup-actions"><button type="button" class="button" data-action="move-legacy">${icon('upload')}서버로 옮기기</button></div></div>`;
+}
+async function moveLegacyData(button) {
+  button.disabled = true;
+  const result = await moveLegacy().catch(error => ({ moved: 0, failed: 1, error: error.message }));
+  await sync.refreshWorkspaces().catch(() => {});
+  if ($('#legacy-move')) $('#legacy-move').outerHTML = legacyHTML();
+  if (result.failed) toast(`${result.moved ? `${result.moved}개를 옮겼지만 ` : ''}${result.failed}개는 옮기지 못했습니다. ${result.error}`, true);
+  else toast(`워크스페이스 ${result.moved}개를 서버로 옮겼습니다. 왼쪽 위 워크스페이스 메뉴에서 열 수 있습니다.`);
+}
 function openSettings() {
-  showModal('settings', '워크스페이스 설정', `<form id="settings-form"><div class="settings-intro"><span class="brand-icon">f.</span><div><strong>나만의 공간, 나만의 방식</strong><p>집중하기 좋은 워크스페이스를 만들어 보세요.</p></div></div><label class="field-label">워크스페이스 이름<input name="name" aria-label="워크스페이스 이름" maxlength="120" required value="${esc(state.settings.name)}"></label><label class="field-label">화면 테마<select name="theme" aria-label="화면 테마"><option value="light" ${state.settings.theme === 'light' ? 'selected' : ''}>라이트 · 밝고 편안하게</option><option value="dark" ${state.settings.theme === 'dark' ? 'selected' : ''}>다크 · 차분하게 집중</option></select></label><div class="privacy-note">${icon('shield')}<div><strong>데이터는 이 브라우저에 저장됩니다.</strong><p>서버 동기화나 실시간 협업은 제공하지 않습니다. 브라우저 데이터를 지우기 전에 백업을 내려받으세요.</p></div></div><div class="backup-actions"><button type="button" class="button" data-action="export-workspace">${icon('download')}워크스페이스 내보내기</button><button type="button" class="button" data-action="import-workspace">${icon('upload')}백업 가져오기</button><input type="file" id="import-file" aria-label="백업 파일 선택" accept=".json,application/json" hidden></div><div class="import-files"><strong>파일 가져오기</strong><p>Markdown 파일은 새 페이지로, CSV 파일은 새 데이터베이스로 가져옵니다.</p><div class="backup-actions"><button type="button" class="button" data-action="import-md">${icon('upload')}Markdown 가져오기</button><button type="button" class="button" data-action="import-csv">${icon('upload')}CSV 가져오기</button><input type="file" id="import-md" aria-label="Markdown 파일 선택" accept=".md,.markdown,.txt,text/markdown,text/plain" hidden><input type="file" id="import-csv" aria-label="CSV 파일 선택" accept=".csv,text/csv" hidden></div></div><div id="import-feedback" role="alert"></div><div class="form-footer"><span></span><button type="submit" class="button primary">설정 저장</button></div></form>`);
+  showModal('settings', '워크스페이스 설정', `<form id="settings-form"><div class="settings-intro"><span class="brand-icon">f.</span><div><strong>나만의 공간, 나만의 방식</strong><p>집중하기 좋은 워크스페이스를 만들어 보세요.</p></div></div><label class="field-label">워크스페이스 이름<input name="name" aria-label="워크스페이스 이름" maxlength="120" required value="${esc(state.settings.name)}"></label><label class="field-label">화면 테마<select name="theme" aria-label="화면 테마"><option value="light" ${state.settings.theme === 'light' ? 'selected' : ''}>라이트 · 밝고 편안하게</option><option value="dark" ${state.settings.theme === 'dark' ? 'selected' : ''}>다크 · 차분하게 집중</option></select></label><div class="privacy-note">${icon('shield')}<div><strong>데이터는 서버에 자동 저장됩니다.</strong><p>로그인하면 어느 기기에서든 같은 문서를 볼 수 있습니다. 중요한 문서는 백업 파일로도 내려받아 두세요.</p></div></div>${legacyHTML()}<div class="backup-actions"><button type="button" class="button" data-action="export-workspace">${icon('download')}워크스페이스 내보내기</button><button type="button" class="button" data-action="import-workspace">${icon('upload')}백업 가져오기</button><input type="file" id="import-file" aria-label="백업 파일 선택" accept=".json,application/json" hidden></div><div class="import-files"><strong>파일 가져오기</strong><p>Markdown 파일은 새 페이지로, CSV 파일은 새 데이터베이스로 가져옵니다.</p><div class="backup-actions"><button type="button" class="button" data-action="import-md">${icon('upload')}Markdown 가져오기</button><button type="button" class="button" data-action="import-csv">${icon('upload')}CSV 가져오기</button><input type="file" id="import-md" aria-label="Markdown 파일 선택" accept=".md,.markdown,.txt,text/markdown,text/plain" hidden><input type="file" id="import-csv" aria-label="CSV 파일 선택" accept=".csv,text/csv" hidden></div></div><div id="import-feedback" role="alert"></div><div class="form-footer"><span></span><button type="submit" class="button primary">설정 저장</button></div></form>`);
 }
 // Redraws a list inside the open dialog; focus goes to the control labelled `label`.
 function refreshList(el, html, label = null) {
@@ -482,7 +547,7 @@ function purge(ids) {
   const gone = purgePages(state, ids);
   ui.sidebarPrefs.recents = ui.sidebarPrefs.recents.filter(id => !gone.has(id));
   for (const id of gone) { ui.expanded.delete(id); ui.dirty.delete(id); ui.snapAt.delete(id); }
-  dropVersions(workspaceId(state), gone); saveSidebar(); render(); refreshTrash();
+  saveSidebar(); render(); refreshTrash();
 }
 const templates = [
   { title: '팀 회의록', label: '회의록', icon: 'calendar', description: '안건부터 결정 사항, 다음 액션까지.', blocks: () => [block('h2', '회의 안건'), block('bullet', '논의할 주제를 입력하세요.'), block('h2', '결정 사항'), block('text'), block('h2', '다음 액션'), block('todo', '담당자와 마감일 정하기')] },
@@ -530,16 +595,27 @@ function linkPage(targetId) {
   persist(); render(); focusBlock(next.id, 0);
 }
 const stamp = at => new Date(at).toLocaleString('ko-KR', { month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
-function historyHTML(page) {
-  const list = versions(workspaceId(state), page.id); const id = esc(page.id);
-  return `<div class="list-head"><span>저장된 버전 ${list.length}개</span><button class="button small" data-action="save-version" data-id="${id}">${icon('plus')}지금 버전 저장</button></div>${list.map((v, i) => `<div class="trash-row"><span>${icon('clock')}<span class="version-name"><strong>${esc(stamp(v.at))}</strong><small>${esc(v.title.trim() || '제목 없음')} · 블록 ${v.blocks.length}개</small></span></span><button class="button small" data-action="restore-version" data-id="${id}" data-version="${esc(v.id)}" aria-label="버전 ${i + 1} 복원">${icon('restore')}복원</button></div>`).join('') || '<div class="empty-state">아직 저장된 버전이 없습니다.<small>페이지를 편집하고 다른 페이지로 이동하면 버전이 남습니다.</small></div>'}`;
+// `list` is what the server keeps for the page, newest first; null while it is being fetched.
+function historyHTML(page, list) {
+  const id = esc(page.id);
+  if (!list) return '<div class="empty-state">버전을 불러오는 중…</div>';
+  return `<div class="list-head"><span>저장된 버전 ${list.length}개</span><button class="button small" data-action="save-version" data-id="${id}">${icon('plus')}지금 버전 저장</button></div>${list.map((v, i) => `<div class="trash-row"><span>${icon('clock')}<span class="version-name"><strong>${esc(stamp(v.at))}</strong><small>${esc(v.title.trim() || '제목 없음')} · 블록 ${v.blockCount}개${v.author ? ` · ${esc(v.author)}` : ''}</small></span></span><button class="button small" data-action="restore-version" data-id="${id}" data-version="${esc(v.id)}" aria-label="버전 ${i + 1} 복원">${icon('restore')}복원</button></div>`).join('') || '<div class="empty-state">아직 저장된 버전이 없습니다.<small>페이지를 편집하고 다른 페이지로 이동하면 버전이 남습니다.</small></div>'}`;
+}
+// Fills the open history dialog once `after` (a version being saved) has settled.
+async function refreshHistory(page, after = null) {
+  await after;
+  let html;
+  try { html = historyHTML(page, await sync.listVersions(page.id)); } catch (error) { html = `<div class="empty-state">${esc(error.message)}</div>`; }
+  const el = $('#history-list'); if (el && el.dataset.page === page.id) refreshList(el, html);
 }
 function openHistory(page) {
-  if (ui.dirty.has(page.id)) keepVersion(page);
-  showModal('history', '페이지 기록', `<p class="dialog-description">페이지를 떠날 때와 편집 중 10분마다 버전을 저장합니다. 페이지마다 최근 ${KEEP}개를 이 브라우저에 보관하며, 백업 파일에는 들어가지 않습니다.</p><div id="history-list">${historyHTML(page)}</div>`);
+  const saving = ui.dirty.has(page.id) ? keepVersion(page) : null;
+  showModal('history', '페이지 기록', `<p class="dialog-description">페이지를 떠날 때와 편집 중 10분마다 버전을 저장합니다. 페이지마다 최근 ${KEEP}개를 서버에 보관하며, 백업 파일에는 들어가지 않습니다.</p><div id="history-list" data-page="${esc(page.id)}">${historyHTML(page, null)}</div>`);
+  refreshHistory(page, saving);
 }
-function restoreVersion(page, versionId) {
-  const version = versions(workspaceId(state), page.id).find(v => v.id === versionId); if (!version) return;
+async function restoreVersion(page, versionId) {
+  let version; try { version = await sync.readVersion(page.id, versionId); } catch (error) { toast(error.message, true); return; }
+  page = state.pages.find(p => p.id === page.id && !p.deleted); if (!page) return;
   let blocks; try { blocks = copyBlocks(version.blocks); } catch (error) { toast('이 버전은 읽을 수 없어 복원하지 않았습니다.', true); return; }
   keepVersion(page); history.snapshot(page);
   page.title = version.title; page.blocks = blocks.length ? blocks : [block()]; page.updatedAt = new Date().toISOString();
@@ -636,7 +712,7 @@ document.addEventListener('click', event => {
     case 'set-cover': { const page = current(); if (pageCovers.some(([name]) => name === target.dataset.cover)) page.cover = target.dataset.cover; else delete page.cover; persist(); render(); $('[data-action="cover-picker"]').focus(); break; }
     case 'toggle-full-width': case 'toggle-small-text': { const page = state.pages.find(p => p.id === id) || current(); const key = action === 'toggle-full-width' ? 'fullWidth' : 'smallText'; if (page[key]) delete page[key]; else page[key] = true; persist(false); render(); break; }
     case 'page-history': openHistory(state.pages.find(p => p.id === id) || current()); break;
-    case 'save-version': { const page = state.pages.find(p => p.id === id); if (!page) break; keepVersion(page, true); refreshList($('#history-list'), historyHTML(page)); break; }
+    case 'save-version': { const page = state.pages.find(p => p.id === id); if (!page) break; refreshHistory(page, keepVersion(page, true)); break; }
     case 'restore-version': { const page = state.pages.find(p => p.id === id); if (page) restoreVersion(page, target.dataset.version); break; }
     case 'pick-page': linkPage(id); break;
     case 'toc-jump': focusBlock(id, 0); $(`[data-block-id="${id}"]`)?.scrollIntoView({ block: 'start' }); break;
@@ -654,7 +730,9 @@ document.addEventListener('click', event => {
     case 'calendar-move': ui.month = Number(target.dataset.delta) ? shiftMonth(ui.month, Number(target.dataset.delta)) : thisMonth(); refreshDatabaseResults(); break;
     case 'db-panel': openPanel(target.dataset.panel); break;
     case 'account': openAccount(); break;
-    case 'logout': logout().catch(error => toast(error.message, true)); break;
+    case 'logout': flushVersions(); sync.forget().then(saved => { if (saved) return logout(); toast('저장하지 못한 변경이 있어 로그아웃하지 않았습니다. 연결을 확인하거나 먼저 백업해 주세요.', true); }).catch(error => toast(error.message, true)); break;
+    case 'move-legacy': moveLegacyData(target); break;
+    case 'copy-link': { const page = state.pages.find(p => p.id === id) || current(); removePopovers(); navigator.clipboard.writeText(`${location.origin}/p/${page.id}`).then(() => toast('페이지 링크를 복사했습니다.'), () => toast('링크를 복사하지 못했습니다.', true)); break; }
     case 'new-row': { const db = shownDb(); if (!db) break; const preset = {}; const quick = quickFilterProp(db); if (quick && db.quick.filter) preset[quick.id] = db.quick.filter; if (target.dataset.prop) preset[target.dataset.prop] = target.dataset.value; openRowForm(shownDbId(), null, preset); break; }
     case 'open-row': openRowForm(shownDbId(), id); break;
     case 'row-menu': rowMenu(id, target); break;
@@ -680,7 +758,7 @@ document.addEventListener('click', event => {
     case 'export-page': { const row = !id && openRow(); const page = state.pages.find(p => p.id === id) || current(); download(`${row ? rowName(row) : pageName(page)}.md`, pageMarkdown(row || page, titleOf), 'text/markdown;charset=utf-8'); toast('페이지를 Markdown으로 내보냈습니다.'); break; }
     case 'export-workspace': download('folio-workspace-backup.json', JSON.stringify(state, null, 2), 'application/json'); toast('백업 파일을 내보냈습니다.'); break;
     case 'import-workspace': $('#import-file').click(); break;
-    case 'confirm-import': if (ui.pendingImport) { state = { ...ui.pendingImport, workspaceId: workspaceId(state) }; history.clearHistory(); dropVersions(workspaceId(state)); ui.dirty.clear(); ui.snapAt.clear(); ui.query = ''; ui.row = null; ui.sidebarPrefs = sidebarSettings(state); ui.expanded = new Set(ui.sidebarPrefs.expanded); ui.collapsed = ui.sidebarPrefs.collapsed; persistenceBlocked = false; lastSavedRaw = localStorage.getItem(STORAGE_KEY); persist.warned = false; persist(); closeModal(false); render(); toast('백업을 가져왔습니다.'); } break;
+    case 'confirm-import': if (ui.pendingImport) { state = ui.pendingImport; delete state.workspaceId; ui.pendingImport = null; history.clearHistory(); ui.dirty.clear(); ui.snapAt.clear(); ui.query = ''; ui.row = null; ui.sidebarPrefs = sidebarSettings(state); ui.expanded = new Set(ui.sidebarPrefs.expanded); ui.collapsed = ui.sidebarPrefs.collapsed; persist(); closeModal(false); render(); toast('백업을 가져왔습니다.'); } break;
     case 'cancel-import': ui.pendingImport = null; $('#import-feedback').innerHTML = ''; break;
     case 'append-block': { remember(); const b = block(); doc().blocks.push(b); persist(); render(); focusBlock(b.id); break; }
     case 'add-block': { remember(); const list = doc().blocks; const index = list.findIndex(b => b.id === id); const b = block(); if (indentOf(list[index])) b.indent = indentOf(list[index]); list.splice(subtreeEnd(list, index), 0, b); persist(); render(); focusBlock(b.id); break; }
@@ -697,7 +775,7 @@ document.addEventListener('click', event => {
     case 'move-page': { const page = state.pages.find(p => p.id === id) || current(); const excluded = descendants(state, page.id); showModal('move', '페이지 이동', `<form id="move-form" data-page-id="${esc(page.id)}"><label class="field-label">상위 페이지<select name="parent" aria-label="이동할 상위 페이지"><option value="">개인 페이지 (최상위)</option>${state.pages.filter(p => !p.deleted && !excluded.has(p.id)).map(p => `<option value="${esc(p.id)}" ${p.id === page.parentId ? 'selected' : ''}>${esc(pageName(p))}</option>`).join('')}</select></label><div class="form-footer"><span></span><button class="button primary">이동</button></div></form>`); break; }
     case 'workspace-menu': openWorkspaceMenu(target); break;
     case 'switch-workspace': activateWorkspace(target.dataset.workspace); break;
-    case 'new-workspace': showModal('workspace-create', '워크스페이스 만들기', '<p class="dialog-description">문서와 프로젝트를 분리하는 이 브라우저의 로컬 공간입니다. 다른 기기나 계정과 자동 동기화되지 않습니다.</p><form id="workspace-form"><label class="field-label">이름<input aria-label="새 워크스페이스 이름" name="name" required maxlength="120" autofocus placeholder="예: 사이드 프로젝트"></label><div class="form-footer"><span></span><button class="button primary">워크스페이스 생성</button></div></form>'); break;
+    case 'new-workspace': showModal('workspace-create', '워크스페이스 만들기', '<p class="dialog-description">문서와 프로젝트를 나누어 담는 공간입니다. 서버에 저장되어 어느 기기에서든 열 수 있습니다.</p><form id="workspace-form"><label class="field-label">이름<input aria-label="새 워크스페이스 이름" name="name" required maxlength="120" autofocus placeholder="예: 사이드 프로젝트"></label><div class="form-footer"><span></span><button class="button primary">워크스페이스 생성</button></div></form>'); break;
     case 'sidebar-page-menu': renderPageMenu(id, target); break;
     case 'sidebar-favorite': { const page = state.pages.find(p => p.id === id); page.favorite = !page.favorite; persist(false); render(); break; }
     case 'rename-page': { const page = state.pages.find(p => p.id === id); showModal('rename', '페이지 이름 바꾸기', `<form id="rename-form" data-page-id="${esc(id)}"><label class="field-label">이름<input aria-label="페이지 이름" name="title" maxlength="500" value="${esc(page.title)}" autofocus></label><div class="form-footer"><span></span><button class="button primary">이름 저장</button></div></form>`); break; }
@@ -982,7 +1060,15 @@ document.addEventListener('drop', event => { const origin = event.target.closest
 document.addEventListener('dragend', () => { ui.draggedRow = null; ui.draggedBlock = null; });
 // Text typed into a cell is saved at once; the rows are sorted and filtered again when focus leaves them.
 document.addEventListener('focusout', event => { const root = event.target.closest?.('#database-results,#row-props'); if (root && ui.staleCells && !root.contains(event.relatedTarget)) setTimeout(() => { if (ui.staleCells) refreshDatabaseResults(); }, 0); });
-window.addEventListener('storage', event => { if (event.key === STORAGE_KEY || event.key === null) { persistenceBlocked = true; if ($('#save-state')) $('#save-state').innerHTML = '<span class="save-error">다른 탭 변경 · 새로고침 필요</span>'; toast('다른 탭의 최신 변경을 보호하기 위해 자동 저장을 멈췄습니다. 현재 편집 내용은 백업한 뒤 새로고침하세요.', true); } });
+document.addEventListener('compositionstart', () => { ui.composing = true; });
+document.addEventListener('compositionend', () => { ui.composing = false; });
+// Back and Forward walk through the pages that were open.
+window.addEventListener('popstate', () => {
+  flushVersions(); const before = state.activeId;
+  if (!openAddress()) { toast('페이지를 찾을 수 없습니다.', true); syncAddress(); return; }
+  if (state.activeId !== before) rememberPage(state.activeId);
+  ui.menu = null; ui.blockMenu = null; ui.query = ''; closeModal(false); removePopovers(); saveSidebar(); render();
+});
 document.addEventListener('contextmenu', event => {
   const row = event.target.closest('[data-sidebar-page]');
   if (!row) return;
@@ -1044,6 +1130,14 @@ document.addEventListener('drop', event => {
   } catch (error) { toast(error.message, true); }
 });
 document.addEventListener('dragend', () => { ui.draggedPage = null; clearPageDropHighlights(); document.documentElement.classList.remove('dragging-page'); });
-window.addEventListener('pagehide', flushVersions);
+window.addEventListener('pagehide', () => flushVersions(true));
+sync.attach({ current: () => state, replace: adopt, status: showSaveState });
+const addressFound = openAddress();
 render();
-if (startupError) toast(startupError, true);
+{
+  let notice = ''; try { notice = sessionStorage.getItem(NOTICE_KEY) || ''; sessionStorage.removeItem(NOTICE_KEY); } catch {}
+  if (started.error) toast(started.error, true);
+  else if (!addressFound) toast('페이지를 찾을 수 없어 마지막으로 보던 페이지를 열었습니다.', true);
+  else if (started.notice) toast(started.notice, true);
+  else if (notice) toast(notice);
+}

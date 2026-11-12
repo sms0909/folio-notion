@@ -15,25 +15,41 @@ async function fixture(data: any) {
   const dir = await mkdtemp(join(tmpdir(), 'folio-e2e-'));
   const path = join(dir, 'backup.json'); await writeFile(path, JSON.stringify(data)); return path;
 }
-const stored = (browser: any) => browser.evaluate(() => JSON.parse(localStorage.getItem('folio.workspace.v1')!));
+const stored = (browser: any) => browser.evaluate(() => JSON.parse(localStorage.getItem('folio.mirror.v1')!));
 
-test('version 1 data is upgraded on load and the original is kept', async ({ screen, browser }) => {
+test('version 1 data left in the browser moves to the server with its page history, and the original is kept', async ({ screen, browser }) => {
   await screen.getByRole('button', '새 페이지', { exact: true }).tap();
   await screen.getByLabel('페이지 제목').fill('옛 버전 페이지');
   await screen.getByLabel('블록 1 내용').pressSequentially('옛 내용');
   const old = await browser.evaluate(() => {
-    const data = JSON.parse(localStorage.getItem('folio.workspace.v1')!); data.version = 1; data.tasks = []; delete data.databases;
-    const raw = JSON.stringify(data); localStorage.setItem('folio.workspace.v1', raw); return raw;
+    const data = JSON.parse(localStorage.getItem('folio.mirror.v1')!); data.version = 1; data.tasks = []; delete data.databases; data.settings.name = '옛 공간';
+    const raw = JSON.stringify(data); localStorage.setItem('folio.workspace.v1', raw);
+    localStorage.setItem('folio.history.v1', JSON.stringify({ default: { [data.activeId]: [{ id: 'v1', at: '2025-01-02T03:04:05.000Z', title: '더 옛 제목', blocks: [{ id: 'b', type: 'text', text: '더 옛 내용', checked: false }] }] } }));
+    return raw;
   });
   await browser.reload();
+  await screen.getByRole('button', '설정', { exact: true }).tap();
+  await expect(screen.getByText('이 브라우저에 있던 문서')).toBeVisible();
+  await screen.getByRole('button', '서버로 옮기기').tap();
+  await expect(browser.locator('#toast')).toContainText('워크스페이스 1개를 서버로 옮겼습니다.');
+  await screen.getByRole('button', '닫기', { exact: true }).tap();
+  await screen.getByRole('button', '워크스페이스 전환').tap();
+  await screen.getByRole('menuitem', '워크스페이스 선택: 옛 공간', { exact: true }).tap();
+  await expect(screen.getByTestId('workspace-name')).toHaveText('옛 공간');
   await expect(screen.getByLabel('페이지 제목')).toHaveValue('옛 버전 페이지');
   await expect(screen.getByLabel('블록 1 내용')).toHaveText('옛 내용');
-  expect(await browser.evaluate(() => localStorage.getItem('folio.workspace.v1.backup'))).toBe(old);
   await screen.getByLabel('블록 1 내용').pressSequentially(' 추가');
   const data = await stored(browser);
   expect(data.version).toBe(4);
   expect(data.pages.find((p: any) => p.id === data.activeId).blocks[0].text).toContain('추가');
-  expect(await browser.evaluate(() => localStorage.getItem('folio.workspace.v1.backup'))).toBe(old);
+  await screen.getByRole('button', '페이지 더보기').tap();
+  await screen.getByRole('menuitem', '페이지 기록', { exact: true }).tap();
+  await expect(screen.getByRole('dialog', '페이지 기록')).toContainText('더 옛 제목');
+  expect(await browser.evaluate(() => localStorage.getItem('folio.workspace.v1'))).toBe(old);
+  // Once moved, it is not offered again.
+  await screen.getByRole('button', '닫기', { exact: true }).tap();
+  await screen.getByRole('button', '설정', { exact: true }).tap();
+  await expect(screen.getByRole('button', '서버로 옮기기')).toHaveCount(0);
 });
 
 test('exports use version 4 and include marks', async ({ screen, browser }) => {

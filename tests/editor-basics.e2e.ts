@@ -8,7 +8,7 @@ beforeEach(async ({ app, screen }) => {
 });
 
 const savedBlocks = (browser: any) => browser.evaluate(() => {
-  const data = JSON.parse(localStorage.getItem('folio.workspace.v1')!);
+  const data = JSON.parse(localStorage.getItem('folio.mirror.v1')!);
   return data.pages.find((p: any) => p.id === data.activeId).blocks.map((b: any) => ({ type: b.type, text: b.text, indent: b.indent ?? 0 }));
 });
 

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 
 beforeEach(async ({ app }) => { await app.open('/'); });
 
-const stored = (browser: any) => browser.evaluate(() => JSON.parse(localStorage.getItem('folio.workspace.v1')!));
+const stored = (browser: any) => browser.evaluate(() => JSON.parse(localStorage.getItem('folio.mirror.v1')!));
 const pageOf = async (browser: any, title: string) => (await stored(browser)).pages.find((p: any) => p.title === title);
 async function newPage(screen: any, title: string) {
   await screen.getByRole('button', '새 페이지', { exact: true }).tap();
@@ -263,30 +263,35 @@ test('page history keeps versions and restores one', async ({ screen, browser })
   await expect(screen.getByText('저장된 버전 2개')).toBeVisible();
 });
 
-test('page history keeps at most ten versions of a page', async ({ screen, browser }) => {
+test('page history keeps at most thirty versions of a page', async ({ screen, browser }) => {
   await newPage(screen, '자주 고치는 문서');
+  await screen.getByLabel('블록 1 내용').fill('처음');
+  await expect(browser.locator('#save-state')).toContainText('저장됨');
+  const answers = await browser.evaluate(async () => {
+    const csrf = JSON.parse(document.querySelector('#folio-session')!.textContent!).csrf;
+    const ws = JSON.parse(document.querySelector('#folio-workspace')!.textContent!).id;
+    const save = (i: number) => fetch(`/api/workspaces/${ws}${location.pathname.replace('/p/', '/pages/')}/versions`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf }, body: JSON.stringify({ title: '자주 고치는 문서', blocks: [{ id: 'b', type: 'text', text: `수정 ${i}`, checked: false }] }) }).then(r => r.status);
+    return Promise.all(Array.from({ length: 33 }, (_, i) => save(i)));
+  });
+  expect(answers.every((status: number) => status === 200)).toBe(true);
   await pageMenu(screen, '페이지 기록');
-  for (let i = 1; i <= 12; i++) {
-    await screen.getByRole('button', '닫기').tap();
-    await screen.getByLabel('블록 1 내용').fill(`수정 ${i}`);
-    await pageMenu(screen, '페이지 기록');
-  }
-  await expect(screen.getByText('저장된 버전 10개')).toBeVisible();
-  await expect(screen.getByRole('button', '버전 11 복원', { exact: true })).toHaveCount(0);
+  await expect(screen.getByText('저장된 버전 30개')).toBeVisible();
+  await expect(screen.getByRole('button', '버전 31 복원', { exact: true })).toHaveCount(0);
 });
 
-test('old versions are dropped with a notice when history storage is full', async ({ screen, browser }) => {
-  await newPage(screen, '용량 문서');
+test('page history is kept on the server and names who saved it', async ({ screen, browser }) => {
+  await newPage(screen, '기록 문서');
   await screen.getByLabel('블록 1 내용').fill('새 내용');
-  await browser.evaluate(() => {
-    const big = (at: string) => ({ id: at, at, title: '옛 버전', blocks: [{ id: 'b', type: 'p', text: 'x'.repeat(590_000) }] });
-    localStorage.setItem('folio.history.v1', JSON.stringify({ other: { page: [big('2020-01-01T00:00:00.000Z'), big('2020-01-02T00:00:00.000Z'), big('2020-01-03T00:00:00.000Z')] } }));
-  });
   await pageMenu(screen, '페이지 기록');
-  await expect(browser.locator('#toast')).toContainText('오래된 페이지 기록 1개를 지웠습니다.');
   await expect(screen.getByText('저장된 버전 1개')).toBeVisible();
-  const kept = await browser.evaluate(() => JSON.parse(localStorage.getItem('folio.history.v1')!).other.page.map((v: any) => v.at));
-  expect(kept).toEqual(['2020-01-02T00:00:00.000Z', '2020-01-03T00:00:00.000Z']);
+  await screen.getByRole('button', '닫기').tap();
+  await expect(browser.locator('#save-state')).toContainText('저장됨');
+  await browser.evaluate(() => { localStorage.clear(); });
+  await browser.reload();
+  await expect(screen.getByLabel('블록 1 내용')).toHaveText('새 내용');
+  await pageMenu(screen, '페이지 기록');
+  await expect(screen.getByText('저장된 버전 1개')).toBeVisible();
+  await expect(screen.getByRole('dialog', '페이지 기록')).toContainText('블록 1개 · Goodus');
 });
 
 test('backups carry icons, covers, links and templates', async ({ screen, browser }) => {

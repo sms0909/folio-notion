@@ -135,14 +135,69 @@ test('new templates do not share mutable block content', async ({ screen }) => {
   await expect(screen.getByLabel('블록 1 내용')).toHaveText('회의 안건');
 });
 
-test('local storage failure retains edits and allows a backup', async ({ app, browser, screen }) => {
-  await browser.addInitScript(() => { Storage.prototype.setItem = function() { throw new DOMException('quota', 'QuotaExceededError'); }; });
-  await browser.reload();
+test('a save the server never got keeps the edits, allows a backup and is sent again', async ({ app, browser, screen }) => {
+  await browser.evaluate(() => {
+    const original = window.fetch; (window as any).reconnect = () => { window.fetch = original; window.dispatchEvent(new Event('online')); };
+    window.fetch = (input: any, init?: any) => String(input).endsWith('/ops') ? Promise.reject(new TypeError('offline')) : original(input, init);
+  });
   await screen.getByRole('button', '새 페이지', { exact: true }).tap();
   await screen.getByLabel('페이지 제목').fill('저장 실패에도 보존할 문서');
-  await expect(browser.locator('#save-state')).toContainText('저장 안 됨');
+  await expect(browser.locator('#save-state')).toContainText('저장 안 됨 · 연결 확인');
+  await expect(browser.locator('#toast')).toContainText('서버에 저장하지 못했습니다.');
   const data = await backup(screen, browser);
   expect(data.pages.some((p: any) => p.title === '저장 실패에도 보존할 문서')).toBe(true);
+  await browser.evaluate(() => { (window as any).reconnect(); });
+  await expect(browser.locator('#save-state')).toContainText('저장됨');
+  await browser.evaluate(() => { localStorage.clear(); });
+  await browser.reload();
+  await expect(screen.getByLabel('페이지 제목')).toHaveValue('저장 실패에도 보존할 문서');
+});
+
+test('edits that never reached the server come back from this browser on the next visit', async ({ app, browser, screen }) => {
+  await browser.addInitScript(() => {
+    const original = window.fetch;
+    window.fetch = (input: any, init?: any) => String(input).endsWith('/ops') ? Promise.reject(new TypeError('offline')) : original(input, init);
+  });
+  await browser.reload();
+  await screen.getByRole('button', '새 페이지', { exact: true }).tap();
+  await screen.getByLabel('페이지 제목').fill('서버에 못 간 문서');
+  await expect(browser.locator('#save-state')).toContainText('저장 안 됨');
+  await browser.reload();
+  await expect(screen.getByLabel('페이지 제목')).toHaveValue('서버에 못 간 문서');
+  await expect(screen.getByRole('button', '페이지 열기: 서버에 못 간 문서', { exact: true })).toBeVisible();
+});
+
+test('a page address opens that page, Back returns, and an unknown address says so', async ({ app, browser, screen }) => {
+  await screen.getByRole('button', '페이지 열기: 팀 위키', { exact: true }).tap();
+  expect(await browser.evaluate(() => location.pathname)).toBe('/p/wiki');
+  await screen.getByRole('button', '페이지 열기: 아이디어 노트', { exact: true }).tap();
+  expect(await browser.evaluate(() => location.pathname)).toBe('/p/ideas');
+  await browser.evaluate(() => { history.back(); });
+  await expect(screen.getByLabel('페이지 제목')).toHaveValue('팀 위키');
+  await browser.evaluate(() => { history.forward(); });
+  await expect(screen.getByLabel('페이지 제목')).toHaveValue('아이디어 노트');
+  await app.open('/p/wiki');
+  await expect(screen.getByLabel('페이지 제목')).toHaveValue('팀 위키');
+  await app.open('/p/no-such-page');
+  await expect(browser.locator('#toast')).toContainText('페이지를 찾을 수 없어');
+});
+
+test('files are uploaded, downloaded only as attachments, and refused when unsafe or not a member', async ({ browser }) => {
+  const result = await browser.evaluate(async () => {
+    const csrf = JSON.parse(document.querySelector('#folio-session')!.textContent!).csrf;
+    const ws = JSON.parse(document.querySelector('#folio-workspace')!.textContent!).id;
+    const upload = (name: string, body: string, to = ws) => fetch(`/api/workspaces/${to}/files?name=${encodeURIComponent(name)}`, { method: 'POST', headers: { 'content-type': 'application/octet-stream', 'x-csrf-token': csrf }, body });
+    const ok = await upload('회의록.txt', '파일 내용'); const file = await ok.json();
+    const got = await fetch(file.url);
+    const listed = await (await fetch(`/api/workspaces/${ws}/files`)).json();
+    return {
+      status: ok.status, name: file.name, text: await got.text(), disposition: got.headers.get('content-disposition'), type: got.headers.get('content-type'),
+      listed: listed.files.map((f: any) => f.name), html: (await upload('page.html', '<script>1</script>')).status, empty: (await upload('빈.txt', '')).status,
+      foreign: (await upload('a.txt', 'x', 'ws-00000000-0000-0000-0000-000000000000')).status,
+      removed: (await fetch(file.url, { method: 'DELETE', headers: { 'x-csrf-token': csrf } })).status, after: (await fetch(file.url)).status,
+    };
+  });
+  expect(result).toEqual({ status: 200, name: '회의록.txt', text: '파일 내용', disposition: "attachment; filename*=UTF-8''%ED%9A%8C%EC%9D%98%EB%A1%9D.txt", type: 'application/octet-stream', listed: ['회의록.txt'], html: 400, empty: 400, foreign: 404, removed: 200, after: 404 });
 });
 
 test('mobile home remains within viewport and database search is usable', async ({ browser, screen, app }) => {

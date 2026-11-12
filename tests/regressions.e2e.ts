@@ -45,18 +45,30 @@ test('backup with HTML in an identifier is rejected before rendering', async ({ 
   await expect(screen.getByRole('button', '백업으로 교체')).toBeHidden();
 });
 
-test('stale tab cannot overwrite a newer workspace', async ({ screen, browser }) => {
+test('changes saved from another tab appear here and neither side is lost', async ({ screen, browser }) => {
   await screen.getByRole('button', '새 페이지', { exact: true }).tap();
   await screen.getByLabel('페이지 제목').fill('현재 탭 문서');
-  await browser.evaluate(() => {
-    const key = 'folio.workspace.v1';
-    const data = JSON.parse(localStorage.getItem(key)!);
-    data.settings.name = '다른 탭의 최신 변경';
-    const previous = localStorage.getItem(key); const next = JSON.stringify(data);
-    localStorage.setItem(key, next);
-    window.dispatchEvent(new StorageEvent('storage', { key, oldValue: previous, newValue: next, storageArea: localStorage }));
+  await screen.getByLabel('블록 1 내용').pressSequentially('이 탭에서 쓴 글');
+  await expect(browser.locator('#save-state')).toContainText('저장됨');
+  const status = await browser.evaluate(async () => {
+    // What another tab of the same person would send.
+    const csrf = JSON.parse(document.querySelector('#folio-session')!.textContent!).csrf;
+    const ws = JSON.parse(document.querySelector('#folio-workspace')!.textContent!).id;
+    const now = await (await fetch(`/api/workspaces/${ws}`)).json();
+    const [key, wiki] = now.entities.find(([key]: any) => key === 'page/wiki');
+    const sent = await fetch(`/api/workspaces/${ws}/ops`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf }, body: JSON.stringify({ base: now.rev, push: crypto.randomUUID(), ops: [['ws', { name: '다른 탭의 최신 변경' }], [key, { ...wiki, title: '다른 탭이 고친 위키' }]] }) });
+    return sent.status;
   });
-  await screen.getByRole('button', '페이지 열기: 팀 위키', { exact: true }).tap();
+  expect(status).toBe(200);
+  await screen.getByLabel('블록 1 내용').pressSequentially(' 그리고 더');
+  await browser.evaluate(() => { window.dispatchEvent(new Event('online')); });
+  await expect(screen.getByTestId('workspace-name')).toHaveText('다른 탭의 최신 변경');
+  await expect(screen.getByRole('button', '페이지 열기: 다른 탭이 고친 위키', { exact: true })).toBeVisible();
+  await expect(screen.getByLabel('블록 1 내용')).toHaveText('이 탭에서 쓴 글 그리고 더');
+  await expect(browser.locator('#save-state')).toContainText('저장됨');
+  await browser.evaluate(() => { localStorage.clear(); });
   await browser.reload();
   await expect(screen.getByTestId('workspace-name')).toHaveText('다른 탭의 최신 변경');
+  await expect(screen.getByLabel('페이지 제목')).toHaveValue('현재 탭 문서');
+  await expect(screen.getByLabel('블록 1 내용')).toHaveText('이 탭에서 쓴 글 그리고 더');
 });

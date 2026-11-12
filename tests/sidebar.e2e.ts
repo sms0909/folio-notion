@@ -55,7 +55,7 @@ test('sidebar duplicate creates an independent copy of the targeted page', async
 test('drag page into another page and preserve its nesting after reload', async ({ screen, browser }) => {
   await screen.getByRole('button', '페이지 열기: 아이디어 노트', { exact: true }).dragTo(screen.getByRole('button', '페이지 열기: 팀 위키', { exact: true }));
   await browser.reload();
-  const parent = await browser.evaluate(() => JSON.parse(localStorage.getItem('folio.workspace.v1')!).pages.find((p: any) => p.id === 'ideas').parentId);
+  const parent = await browser.evaluate(() => JSON.parse(localStorage.getItem('folio.mirror.v1')!).pages.find((p: any) => p.id === 'ideas').parentId);
   expect(parent).toBe('wiki');
   await expect(screen.getByRole('button', '페이지 열기: 아이디어 노트', { exact: true })).toBeVisible();
 });
@@ -126,8 +126,8 @@ test('pointer resizing persists the sidebar width', async ({ browser, screen }) 
 
 test('dragging a parent into its descendant does not create a cycle', async ({ screen, browser }) => {
   await screen.getByRole('button', '페이지 열기: 팀 위키', { exact: true }).dragTo(screen.getByRole('button', '페이지 열기: 주간 회의', { exact: true }));
-  await expect(screen.getByRole('status')).toContainText('자신이나 하위 페이지');
-  const parents = await browser.evaluate(() => JSON.parse(localStorage.getItem('folio.workspace.v1') || '{}').pages?.map((p: any) => [p.id, p.parentId]) || []);
+  await expect(browser.locator('#toast')).toContainText('자신이나 하위 페이지');
+  const parents = await browser.evaluate(() => JSON.parse(localStorage.getItem('folio.mirror.v1') || '{}').pages?.map((p: any) => [p.id, p.parentId]) || []);
   expect(parents.length === 0 || parents.some(([id, parent]: any) => id === 'wiki' && parent === null)).toBe(true);
   await browser.reload();
   await expect(screen.getByRole('button', '페이지 열기: 주간 회의', { exact: true })).toBeVisible();
@@ -162,17 +162,18 @@ test('database sidebar shortcut opens the board view', async ({ screen }) => {
   await expect(screen.getByRole('tab', '보드', { exact: true })).toHaveAttribute('aria-selected', 'true');
 });
 
-test('workspace switch failure preserves the original canonical data', async ({ screen, browser }) => {
+test('a workspace that cannot be created leaves the current one open', async ({ screen, browser }) => {
   await screen.getByRole('button', '새 페이지', { exact: true }).tap();
   await screen.getByLabel('페이지 제목').fill('저장 실패 시 보존할 원본');
   await screen.getByRole('button', '워크스페이스 전환').tap();
   await screen.getByRole('menuitem', '워크스페이스 만들기').tap();
   await screen.getByLabel('새 워크스페이스 이름').fill('저장할 수 없는 공간');
   await browser.evaluate(() => {
-    const original = Storage.prototype.setItem;
-    Storage.prototype.setItem = function(key, value) { if (key === 'folio.workspaces.v1') throw new DOMException('quota', 'QuotaExceededError'); return original.call(this, key, value); };
+    const original = window.fetch;
+    window.fetch = (input: any, init?: any) => String(input) === '/api/workspaces' ? Promise.reject(new TypeError('offline')) : original(input, init);
   });
   await screen.getByRole('button', '워크스페이스 생성', { exact: true }).tap();
+  await expect(browser.locator('#toast')).toContainText('서버에 연결하지 못했습니다.');
   await screen.getByRole('button', '닫기', { exact: true }).tap();
   await browser.reload();
   await expect(screen.getByTestId('workspace-name')).toHaveText('Goodus의 워크스페이스');

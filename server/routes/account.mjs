@@ -13,9 +13,9 @@ export const NOAUTO = 'folio_noauto';
 async function autoLogin(req, reply) {
   const now = Date.now();
   const email = `auto-${randomBytes(6).toString('hex')}@folio.test`;
-  const result = await query('INSERT INTO users (email, name, role, is_system, otp_confirmed_at, created_at, last_login_at) VALUES (?, ?, ?, 1, ?, ?, ?)', [email, '테스트 사용자', 'member', now, now, now]);
+  const result = await query('INSERT INTO users (email, name, role, is_system, otp_confirmed_at, created_at, last_login_at) VALUES (?, ?, ?, 1, ?, ?, ?)', [email, 'Goodus', 'member', now, now, now]);
   const { csrf } = await createSession(req, reply, result.insertId, true);
-  return { user: { id: result.insertId, email, name: '테스트 사용자', picture: '', role: 'member', otp_confirmed_at: now, otp_locked_until: 0 }, session: { csrf, otp_verified: 1 } };
+  return { user: { id: result.insertId, email, name: 'Goodus', picture: '', role: 'member', otp_confirmed_at: now, otp_locked_until: 0 }, session: { csrf, otp_verified: 1 } };
 }
 
 // 화면과 /api/me 가 함께 쓰는 로그인 상태.

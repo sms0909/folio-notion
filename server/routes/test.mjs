@@ -14,6 +14,13 @@ export function testRoutes(app) {
     return reply.redirect('/');
   });
 
+  // 다음 화면을 새 사용자(새 기본 워크스페이스)로 연다.
+  app.get('/auth/test/fresh', async (req, reply) => {
+    await destroySession(req, reply);
+    reply.clearCookie(NOAUTO, { path: '/' });
+    return reply.redirect('/');
+  });
+
   // 실제 가입 절차로 만든 사용자·초대·기록을 지운다. 자동 로그인 사용자는 남긴다.
   app.get('/auth/test/reset', async (req, reply) => {
     await query('DELETE FROM invites');

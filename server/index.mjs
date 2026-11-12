@@ -8,6 +8,8 @@ import { loadSession, purgeExpired } from './auth/session.mjs';
 import { googleRoutes } from './auth/google.mjs';
 import { accountRoutes, sessionInfo } from './routes/account.mjs';
 import { adminRoutes } from './routes/admin.mjs';
+import { workspaceRoutes } from './routes/workspace.mjs';
+import { bootWorkspace } from './workspace.mjs';
 
 const problems = configProblems();
 if (problems.length) {
@@ -62,6 +64,7 @@ app.addHook('onSend', async (req, reply) => {
 googleRoutes(app);
 accountRoutes(app);
 adminRoutes(app);
+workspaceRoutes(app);
 if (config.test) {
   app.addContentTypeParser('application/x-www-form-urlencoded', { parseAs: 'string' }, (req, body, done) => done(null, Object.fromEntries(new URLSearchParams(body))));
   await (await import('./auth/mock-oidc.mjs')).mockOidcRoutes(app);
@@ -80,8 +83,10 @@ app.setNotFoundHandler(async (req, reply) => {
     if (file === resolve(root, 'index.html')) {
       const info = await sessionInfo(req, reply);
       const script = info.state !== 'ready' ? 'auth-view' : pathname === '/admin' ? 'admin' : 'app';
-      const boot = `<script type="application/json" id="folio-session">${JSON.stringify(info).replace(/</g, '\\u003c')}</script>
-  <script type="module" src="/${script}.js"></script>`;
+      const embed = (id, data) => `<script type="application/json" id="${id}">${JSON.stringify(data).replace(/</g, '\\u003c')}</script>\n  `;
+      // 앱 화면에는 열 워크스페이스의 내용을 함께 넣어, 화면이 서버 응답을 기다리지 않고 바로 뜨게 한다.
+      const workspace = script === 'app' ? embed('folio-workspace', await bootWorkspace(info.user, pathname.match(/^\/p\/([^/]+)$/)?.[1])) : '';
+      const boot = `${embed('folio-session', info)}${workspace}<script type="module" src="/${script}.js"></script>`;
       return reply.header('Cache-Control', 'no-store').type(mime['.html']).send(content.toString('utf8').replace('<!--folio:boot-->', boot));
     }
     return reply.header('Cache-Control', 'no-cache').type(mime[extname(file)] || 'application/octet-stream').send(content);
@@ -90,7 +95,7 @@ app.setNotFoundHandler(async (req, reply) => {
 
 app.setErrorHandler((error, req, reply) => {
   if (!error.statusCode || error.statusCode >= 500) { req.log.error(error); return reply.code(500).send({ error: '서버에서 문제가 생겼습니다.' }); }
-  return reply.code(error.statusCode).send({ error: '요청을 처리할 수 없습니다.' });
+  return reply.code(error.statusCode).send({ error: error.shown || (error.statusCode === 413 ? '보내는 내용이 너무 큽니다.' : '요청을 처리할 수 없습니다.') });
 });
 
 try {
