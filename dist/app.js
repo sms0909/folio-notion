@@ -3,6 +3,7 @@ import { listWorkspaces, switchLocalWorkspace, workspaceId } from './workspaces.
 import { databaseHTML as renderDatabaseHTML, databaseResults, countText, totalText, rowFormHTML, rowPropsHTML, filterPanelHTML, sortPanelHTML, propsPanelHTML, viewPanelHTML, josa, rowName } from './database-view.js';
 import { limits, propertyTypes, viewTypes, optionColors, propOf, operators, activeView, quickFilterProp, groupProp, dateProp, cleanValue, valueOf, rowText, makeRow, addView, makeDatabase, visibleRows, isSorted, calcsFor, total, shiftMonth, changeType, repair, renameOption } from './database-model.js';
 import { icon } from './icons.js';
+import { session, logout } from './session.js';
 import { HOLD, MAX_TEXT, listTypes, staticTypes, markdownShortcut, indentOf, numbering, hiddenBlocks, subtreeEnd, shiftIndent, slashMatches, readText, selectionOffsets, setSelection, caretOnEdge } from './blocks.js';
 import * as history from './history.js';
 import { colors, safeHref, normalizeMarks, toggleMark, covers, marksAt, marksIn, sliceMarks, shiftMarks, spliceMarks, renderInline, readInline, nodeMarks, inlineShortcut } from './richtext.js';
@@ -324,8 +325,9 @@ function onPanelChange(el) {
   repair(db); persist(); refreshPanel(); if (el.dataset.viewField) refreshSidebar();
 }
 function openAccount() {
-  const hosted = location.hostname.endsWith('.chatgpt.site');
-  showModal('account', '계정 및 로그인', `<div class="account-summary">${icon('user')}<div><strong>${hosted ? 'ChatGPT로 보호된 워크스페이스' : '로컬 미리보기'}</strong><p>${hosted ? '앱 접근 권한은 현재 로그인한 ChatGPT 계정으로 확인합니다.' : '로컬 서버에는 ChatGPT 로그인 세션이 없습니다.'}</p></div></div><p class="dialog-description">계정을 바꾸려면 로그아웃 후 다시 로그인하세요. 접근 권한이 있는 계정만 앱을 열 수 있습니다.</p><div class="privacy-note">${icon('shield')}<div><strong>로그아웃해도 이 브라우저의 문서는 삭제되지 않습니다.</strong><p>문서는 계정별 서버 저장이 아닌 브라우저 저장 방식입니다. 공용 기기에서는 백업 후 브라우저 데이터를 관리하세요.</p></div></div><div class="account-actions"><a class="button" href="/signin-with-chatgpt?return_to=%2F" target="_top">ChatGPT 로그인</a><a class="button primary" href="/signout-with-chatgpt?return_to=%2F" target="_top">ChatGPT 로그아웃</a></div>`);
+  const { user } = session;
+  const admin = user.role === 'admin';
+  showModal('account', '계정 및 로그인', `<div class="account-summary">${icon('user')}<div><strong>${esc(user.name || user.email)}</strong><p>${esc(user.email)} · ${admin ? '관리자' : '멤버'}</p></div></div><p class="dialog-description">Google 계정과 OTP로 로그인했습니다. 계정을 바꾸려면 로그아웃한 뒤 다시 로그인하세요.</p><div class="privacy-note">${icon('shield')}<div><strong>로그아웃해도 이 브라우저의 문서는 삭제되지 않습니다.</strong><p>문서는 아직 이 브라우저에 저장됩니다. 공용 기기에서는 백업 후 브라우저 데이터를 관리하세요.</p></div></div><div class="account-actions">${admin ? '<a class="button" href="/admin">관리자 화면</a>' : ''}<button type="button" class="button primary" data-action="logout">로그아웃</button></div>`);
 }
 function refreshSidebar() { const holder = document.createElement('div'); holder.innerHTML = sidebar(); $('.sidebar').replaceWith(holder.firstElementChild); }
 function updateTitleUI() { $$('[data-page-name]').filter(el => el.dataset.pageName === current().id).forEach(el => { el.textContent = pageName(current()); }); document.title = `${pageName(current())} — Folio`; }
@@ -382,7 +384,7 @@ function openWorkspaceMenu(anchor) {
   let workspaces;
   try { workspaces = listWorkspaces(state); } catch (error) { toast(error.message, true); return; }
   const el = document.createElement('div'); el.className = 'popover workspace-menu'; el.setAttribute('role', 'menu');
-  el.innerHTML = `<div class="menu-caption">이 브라우저의 워크스페이스</div>${workspaces.map(w => `<button role="menuitem" data-action="switch-workspace" data-workspace="${esc(w.id)}" aria-label="워크스페이스 선택: ${esc(w.name)}"><span class="workspace-avatar">${esc(w.name.slice(0, 1))}</span><span>${esc(w.name)}</span>${w.id === workspaceId(state) ? icon('check') : ''}</button>`).join('')}<div class="menu-divider"></div><button role="menuitem" data-action="new-workspace">${icon('plus')}워크스페이스 만들기</button><button role="menuitem" data-action="settings">${icon('settings')}워크스페이스 설정</button><button role="menuitem" data-action="account">${icon('user')}계정 관리</button><a href="/signin-with-chatgpt?return_to=%2F" target="_top">${icon('external')}다른 ChatGPT 계정으로 로그인</a><a href="/signout-with-chatgpt?return_to=%2F" target="_top">${icon('external')}ChatGPT 로그아웃</a>`;
+  el.innerHTML = `<div class="menu-caption">이 브라우저의 워크스페이스</div>${workspaces.map(w => `<button role="menuitem" data-action="switch-workspace" data-workspace="${esc(w.id)}" aria-label="워크스페이스 선택: ${esc(w.name)}"><span class="workspace-avatar">${esc(w.name.slice(0, 1))}</span><span>${esc(w.name)}</span>${w.id === workspaceId(state) ? icon('check') : ''}</button>`).join('')}<div class="menu-divider"></div><button role="menuitem" data-action="new-workspace">${icon('plus')}워크스페이스 만들기</button><button role="menuitem" data-action="settings">${icon('settings')}워크스페이스 설정</button><button role="menuitem" data-action="account">${icon('user')}계정 관리</button>${session.user.role === 'admin' ? `<a role="menuitem" href="/admin">${icon('shield')}관리자 화면</a>` : ''}<button role="menuitem" data-action="logout">${icon('external')}로그아웃</button>`;
   document.body.append(el); const bounds = anchor.getBoundingClientRect(); el.style.left = `${Math.min(bounds.left, innerWidth - 300)}px`; el.style.top = `${bounds.bottom + 7}px`;
 }
 function activateWorkspace(id, name = null) {
@@ -652,6 +654,7 @@ document.addEventListener('click', event => {
     case 'calendar-move': ui.month = Number(target.dataset.delta) ? shiftMonth(ui.month, Number(target.dataset.delta)) : thisMonth(); refreshDatabaseResults(); break;
     case 'db-panel': openPanel(target.dataset.panel); break;
     case 'account': openAccount(); break;
+    case 'logout': logout().catch(error => toast(error.message, true)); break;
     case 'new-row': { const db = shownDb(); if (!db) break; const preset = {}; const quick = quickFilterProp(db); if (quick && db.quick.filter) preset[quick.id] = db.quick.filter; if (target.dataset.prop) preset[target.dataset.prop] = target.dataset.value; openRowForm(shownDbId(), null, preset); break; }
     case 'open-row': openRowForm(shownDbId(), id); break;
     case 'row-menu': rowMenu(id, target); break;

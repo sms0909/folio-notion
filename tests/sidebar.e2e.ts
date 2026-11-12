@@ -8,7 +8,7 @@ test('workspace dropdown provides workspace creation settings and native account
   await expect(screen.getByRole('menuitem', '워크스페이스 만들기')).toBeVisible();
   await expect(screen.getByRole('menuitem', '워크스페이스 설정')).toBeVisible();
   await expect(screen.getByRole('menuitem', '계정 관리')).toBeVisible();
-  await expect(screen.getByRole('link', '다른 ChatGPT 계정으로 로그인')).toHaveAttribute('target', '_top');
+  await expect(screen.getByRole('menuitem', '로그아웃', { exact: true })).toBeVisible();
   await app.screenshot('workspace-switcher');
 });
 
@@ -183,7 +183,7 @@ test('mobile sidebar remains within viewport and exposes workspace controls', as
   await browser.setViewport({ width: 390, height: 844 });
   await screen.getByRole('button', '사이드바 열기').tap();
   await expect(screen.getByRole('button', '워크스페이스 전환')).toBeVisible();
-  await expect(screen.getByRole('link', 'ChatGPT 로그아웃', { exact: true })).toBeVisible();
+  await expect(screen.getByRole('button', '로그아웃', { exact: true })).toBeVisible();
   expect(await browser.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await app.screenshot('mobile-sidebar');
 });

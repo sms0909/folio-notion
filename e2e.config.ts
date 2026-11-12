@@ -13,7 +13,7 @@ export default {
     engine: web(),
     app: {
       url: process.env.APP_URL ?? 'http://127.0.0.1:4317',
-      command: { executable: 'node', args: ['server.mjs'], reuseExisting: true, log: '.e2e/logs/app.log' },
+      command: { executable: 'node', args: ['server.mjs', '--test'], reuseExisting: true, log: '.e2e/logs/app.log' },
     },
   }],
 } satisfies E2EConfig;

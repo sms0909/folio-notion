@@ -66,26 +66,25 @@ test('board drag updates status in the table and survives reload', async ({ scre
   await expect(screen.getByLabel('브랜드 가이드 정리 상태')).toHaveValue('완료');
 });
 
-test('account dialog exposes native top-level sign-out without clearing local work', async ({ screen, browser }) => {
+test('account dialog shows the signed-in user and logs out without clearing local work', async ({ screen, browser }) => {
+  await screen.getByLabel('브랜드 가이드 정리 담당자').fill('민수');
+  await screen.getByLabel('브랜드 가이드 정리 담당자').press('Tab');
   await screen.getByRole('button', '계정', { exact: true }).tap();
-  await expect(screen.getByRole('heading', '계정 및 로그인')).toBeVisible();
-  const link = screen.getByRole('dialog', '계정 및 로그인').getByRole('link', 'ChatGPT 로그아웃', { exact: true });
-  await expect(link).toHaveAttribute('href', '/signout-with-chatgpt?return_to=%2F');
-  await expect(link).toHaveAttribute('target', '_top');
+  const dialog = screen.getByRole('dialog', '계정 및 로그인');
+  await expect(dialog).toContainText('@folio.test · 멤버');
   await expect(screen.getByText('로그아웃해도 이 브라우저의 문서는 삭제되지 않습니다.', { exact: true })).toBeVisible();
-  await browser.route('**/signout-with-chatgpt?*', route => route.fulfill({ status: 200, headers: { 'content-type': 'text/html; charset=utf-8' }, body: '<h1>플랫폼 로그아웃 경로 도착</h1>' }));
-  await link.tap();
-  await expect(screen.getByRole('heading', '플랫폼 로그아웃 경로 도착')).toBeVisible();
+  await expect(dialog.getByRole('link', '관리자 화면', { exact: true })).toHaveCount(0);
+  await dialog.getByRole('button', '로그아웃', { exact: true }).tap();
+  await expect(screen.getByRole('heading', 'Folio에 로그인')).toBeVisible();
+  expect(await browser.evaluate(() => (localStorage.getItem('folio.workspace.v1') ?? '').includes('민수'))).toBe(true);
 });
 
-test('account dialog keyboard reaches login logout and closes the focus loop', async ({ screen, browser, app }) => {
+test('account dialog keyboard reaches logout and closes the focus loop', async ({ screen, browser, app }) => {
   await screen.getByRole('button', '계정', { exact: true }).tap();
   const dialog = screen.getByRole('dialog', '계정 및 로그인');
   await dialog.getByRole('button', '닫기', { exact: true }).focus();
   await browser.keyboard.press('Tab');
-  await expect(dialog.getByRole('link', 'ChatGPT 로그인', { exact: true })).toBeFocused();
-  await browser.keyboard.press('Tab');
-  await expect(dialog.getByRole('link', 'ChatGPT 로그아웃', { exact: true })).toBeFocused();
+  await expect(dialog.getByRole('button', '로그아웃', { exact: true })).toBeFocused();
   await browser.keyboard.press('Tab');
   await expect(dialog.getByRole('button', '닫기', { exact: true })).toBeFocused();
   await app.screenshot('account-login-logout');

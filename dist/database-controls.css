@@ -1,6 +1,6 @@
 [hidden]{display:none!important}
 .signout-link{text-decoration:none;font-size:12px;color:#7d8474}
-.footer-signout{display:inline-flex;align-items:center;gap:5px;padding:6px;border-radius:4px;text-decoration:none;font-size:11px;color:#6f7b60}
+.footer-signout{border:0;background:none;cursor:pointer;font-family:inherit;display:inline-flex;align-items:center;gap:5px;padding:6px;border-radius:4px;text-decoration:none;font-size:11px;color:#6f7b60}
 .footer-signout .icon{width:13px;height:13px}
 .footer-signout:hover{background:var(--hover);color:var(--text)}
 .account-summary{display:flex;gap:14px;align-items:center;margin:5px 0 18px;padding:15px;background:var(--surface);border:1px solid var(--line);border-radius:8px}

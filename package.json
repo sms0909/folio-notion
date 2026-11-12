@@ -4,13 +4,21 @@
   "private": true,
   "type": "module",
   "devDependencies": {
-    "e2e": "^0.21.2",
-    "@e2e-dev/web": "^0.15.2"
+    "@e2e-dev/web": "^0.15.2",
+    "e2e": "^0.21.2"
   },
   "scripts": {
     "start": "node server.mjs",
+    "dev": "node server.mjs --test",
     "test:e2e": "e2e run",
     "test:research": "e2e run --config research.config.ts",
-    "check": "node --check dist/app.js && node --check dist/store.js && node --check dist/database-view.js && node --check dist/sidebar-view.js && node --check dist/workspaces.js && node --check dist/icons.js && node --check dist/blocks.js && node --check dist/history.js && node --check dist/richtext.js && node --check dist/migrate.js && node --check dist/database-model.js && node --check dist/import-export.js && node --check dist/page-history.js && node --check server.mjs"
+    "check": "node --check dist/app.js && node --check dist/store.js && node --check dist/database-view.js && node --check dist/sidebar-view.js && node --check dist/workspaces.js && node --check dist/icons.js && node --check dist/blocks.js && node --check dist/history.js && node --check dist/richtext.js && node --check dist/migrate.js && node --check dist/database-model.js && node --check dist/import-export.js && node --check dist/page-history.js && node --check dist/session.js && node --check dist/auth-view.js && node --check dist/admin.js && node --check server.mjs && node --check server/index.mjs && node --check server/config.mjs && node --check server/db.mjs && node --check server/cli.mjs && node --check server/auth/totp.mjs && node --check server/auth/session.mjs && node --check server/auth/google.mjs && node --check server/auth/mock-oidc.mjs && node --check server/routes/account.mjs && node --check server/routes/admin.mjs && node --check server/routes/test.mjs"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^11.1.5",
+    "fastify": "^5.12.8",
+    "jose": "^6.2.17",
+    "mariadb": "^3.5.5",
+    "qrcode": "^1.5.4"
   }
 }
