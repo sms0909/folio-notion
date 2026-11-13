@@ -41,9 +41,22 @@ export function shiftIndent(blocks, index, delta) {
   for (let i = index; i < end; i++) blocks[i].indent = Math.min(MAX_INDENT, Math.max(0, indentOf(blocks[i]) + delta));
   return true;
 }
+// Hangul is typed a letter at a time: "ㅍ", "페", "펭" are all on the way to "페이".
+const LEADS = 'ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ'; const TAILS = ' ㄱㄲㄳㄴㄵㄶㄷㄹㄺㄻㄼㄽㄾㄿㅀㅁㅂㅄㅅㅆㅇㅈㅊㅋㅌㅍㅎ';
+const syllable = c => { const n = (c?.charCodeAt(0) ?? 0) - 0xAC00; return n >= 0 && n < 11172 ? n : -1; };
+const leadOf = c => { const n = syllable(c); return n < 0 ? '' : LEADS[Math.floor(n / 588)]; };
+function typedMatch(text, q) {
+  return [...text].some((_, at) => [...q].every((c, j) => {
+    const have = text[at + j]; if (have === undefined) return false;
+    if (c === have || (LEADS.includes(c) && leadOf(have) === c)) return true;
+    // The last letter may still hold the first consonant of the next one.
+    const n = syllable(c); const tail = n < 0 ? 0 : n % 28;
+    return j === q.length - 1 && tail > 0 && String.fromCharCode(0xAC00 + n - tail) === have && leadOf(text[at + j + 1]) === TAILS[tail];
+  }));
+}
 export function slashMatches(options, query) {
   const q = query.trim().toLocaleLowerCase();
-  return options.filter(([type, label, , , keywords = '']) => !q || `${label} ${type} ${keywords}`.toLocaleLowerCase().includes(q));
+  return options.filter(([type, label, , , keywords = '']) => !q || `${label} ${type} ${keywords}`.toLocaleLowerCase().includes(q) || typedMatch(label.toLocaleLowerCase(), q));
 }
 
 export function readText(el) {

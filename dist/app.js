@@ -925,14 +925,19 @@ function onBlockInput(el, event) {
   else if (!text && el.firstChild) el.replaceChildren();
   persist();
   if (/^h[123]$/.test(b.type)) refreshToc();
-  if (event.isComposing) return;
+  // The menu follows the text while Korean is still being composed, too.
+  if (event.isComposing) { showSlash(b, true); return; }
   dropUsedHold(el);
   if (applyShortcut(b, el, event) || applyInlineShortcut(b, el, event)) return;
   // Typing "[[" opens the page picker to link a page.
   if (b.type !== 'code' && event.inputType === 'insertText' && event.data === '[') { const pos = selectionOffsets(el); if (pos && pos.start === pos.end && b.text.slice(pos.start - 2, pos.start) === '[[') { openPagePicker({ id: b.id, cut: [pos.start - 2, pos.start] }); return; } }
+  showSlash(b);
+}
+// Opens, filters or closes the slash menu to match what the block says.
+function showSlash(b, composing = false) {
   const slash = /^\/(\S{0,30})$/.exec(b.text);
   if (b.text === '/') renderBlockMenu(b.id, { query: '', active: 0 });
-  else if (ui.blockMenu === b.id && ui.slash && slash) renderBlockMenu(b.id, { query: slash[1], active: 0 });
+  else if (slash && ((ui.blockMenu === b.id && ui.slash) || composing)) renderBlockMenu(b.id, { query: slash[1], active: 0 });
   else if (ui.blockMenu === b.id && (ui.slash || !b.text.startsWith('/'))) removePopovers();
 }
 // Markdown shortcuts fire only for text typed one key at a time, so pasted text such as "# title" stays literal.

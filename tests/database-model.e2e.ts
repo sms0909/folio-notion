@@ -444,6 +444,23 @@ test('an image pasted into the editor is uploaded and shown as a block', async (
   expect(await shown()).toBe(1);
 });
 
+test('the slash menu narrows with every letter while Korean is being composed', async ({ screen, browser }) => {
+  await screen.getByRole('button', '새 페이지', { exact: true }).tap();
+  await screen.getByLabel('블록 1 내용').pressSequentially('/');
+  await expect(screen.getByRole('option', '텍스트', { exact: true })).toBeVisible();
+  // What an input method does: the text changes while the composition is still open.
+  const compose = (text: string) => browser.evaluate((text: string) => {
+    const el = document.querySelector<HTMLElement>('[data-edit-block]')!; el.textContent = text;
+    el.dispatchEvent(new InputEvent('input', { bubbles: true, isComposing: true, inputType: 'insertCompositionText' }));
+    return [...document.querySelectorAll('.block-menu [role="option"]')].map(option => option.getAttribute('aria-label'));
+  }, text);
+  for (const text of ['/ㅍ', '/페', '/펭', '/페이', '/페잊', '/페이지']) expect(await compose(text)).toEqual(['페이지', '페이지 링크']);
+  expect(await compose('/ㅇㅁ')).toEqual(['이미지']);
+  // Nothing fits: the menu goes away, and comes back when the text fits again.
+  expect(await compose('/ㅋㅋ')).toEqual([]);
+  expect(await compose('/코')).toEqual(['코드']);
+});
+
 test('a backup carries properties, views and rows', async ({ screen, browser }) => {
   await addProperty(screen, '예산', '숫자');
   await done(screen);
