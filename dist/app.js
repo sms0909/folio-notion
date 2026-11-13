@@ -103,7 +103,7 @@ function rememberPage(id) {
 }
 function go(id) { flushVersions(); state.activeId = id; rememberPage(id); ui.sidebar = false; ui.menu = null; ui.blockMenu = null; ui.row = null; ui.query = ''; saveSidebar(); render(); $('.main-scroll').scrollTop = 0; }
 // `setup` runs on the new page before it is saved, for pages that need more than blocks.
-function addPage(options = {}, setup = null) { if (state.pages.length >= 1000) { toast('페이지는 최대 1,000개까지 만들 수 있습니다.', true); return false; } flushVersions(); const page = createPage(state, options); setup?.(page); if (page.parentId) ui.expanded.add(page.parentId); ui.sidebarPrefs.closed.pages = false; ui.row = null; ui.query = ''; rememberPage(page.id); persist(); saveSidebar(); ui.sidebar = false; closeModal(false); render(); $('#page-title').focus(); $('#page-title').select(); return true; }
+function addPage(options = {}, setup = null) { if (state.pages.length >= 1000) { toast('페이지는 최대 1,000개까지 만들 수 있습니다.', true); return false; } flushVersions(); const page = createPage(state, options); setup?.(page); linkChild(page); if (page.parentId) ui.expanded.add(page.parentId); ui.sidebarPrefs.closed.pages = false; ui.row = null; ui.query = ''; rememberPage(page.id); persist(); saveSidebar(); ui.sidebar = false; closeModal(false); render(); $('#page-title').focus(); $('#page-title').select(); return true; }
 function sidebar() { return sidebarHTML(state, ui); }
 function breadcrumb(page) {
   const chain = []; let cursor = page; const seen = new Set();
@@ -118,14 +118,42 @@ function tocHTML(blocks) {
   return heads.map(b => `<button class="toc-item toc-${b.type}" data-action="toc-jump" data-id="${esc(b.id)}">${esc(b.text)}</button>`).join('') || '<p class="toc-empty">제목 블록을 추가하면 목차가 만들어집니다.</p>';
 }
 function refreshToc() { for (const el of $$('[data-toc]')) el.innerHTML = tocHTML(doc().blocks); }
-// Blocks without text of their own: divider, table of contents and page link.
+// Blocks without text of their own: divider, table of contents, image and page link.
 function staticHTML(b, context) {
   if (b.type === 'divider') return '<hr>';
+  if (b.type === 'image') return `<figure class="image-block"><img src="/api/files/${esc(b.file)}" alt="${esc(b.text || '이미지')}"></figure>`;
   if (b.type === 'toc') return `<nav class="toc" aria-label="목차" data-toc>${tocHTML(context.blocks)}</nav>`;
   const target = livePage(b.target);
   return target ? `<button class="page-link-block" data-action="open" data-id="${esc(target.id)}" aria-label="페이지 링크: ${esc(pageName(target))}">${icon(target.icon)}<span>${esc(pageName(target))}</span>${icon('arrow')}</button>` : `<span class="page-link-block missing">${icon('file')}<span>삭제된 페이지</span></span>`;
 }
 const linksTo = (blocks, id) => blocks.some(b => b.type === 'page' && b.target === id);
+// As in Notion, a page made inside another one shows up in the body of its parent.
+function linkChild(page) {
+  const parent = livePage(page.parentId); if (!parent || parent.type === 'database' || linksTo(parent.blocks, page.id)) return;
+  const last = parent.blocks.at(-1); const link = { ...block('page'), target: page.id };
+  parent.blocks.splice(last?.type === 'text' && !last.text ? parent.blocks.length - 1 : parent.blocks.length, 0, link);
+}
+function unlinkChild(page, parentId = page.parentId) {
+  const parent = state.pages.find(p => p.id === parentId); if (!parent) return;
+  const rest = list => list.filter(b => !(b.type === 'page' && b.target === page.id));
+  parent.blocks = rest(parent.blocks); if (!parent.blocks.length && parent.type !== 'database') parent.blocks.push(block());
+  for (const row of state.databases[parent.id]?.rows || []) row.blocks = rest(row.blocks);
+}
+function trash(id) { const page = state.pages.find(p => p.id === id); if (page) unlinkChild(page); trashPage(state, id); }
+function restore(id) { restorePage(state, id); linkChild(state.pages.find(p => p.id === id)); }
+function reparent(id, parentId = null, beforeId = null) {
+  const page = state.pages.find(p => p.id === id); const old = page?.parentId ?? null;
+  movePage(state, id, parentId, beforeId);
+  if (page.parentId !== old) { unlinkChild(page, old); linkChild(page); }
+}
+// The block of a page that lives inside this one stands for the page: taking the block away
+// moves the page to the trash, and bringing it back (undo) restores the page.
+const linkedPages = () => new Set(doc().blocks.filter(b => b.type === 'page').map(b => b.target));
+function settleChildren(before) {
+  const now = linkedPages(); const owner = current().id;
+  for (const id of before) if (!now.has(id) && livePage(id)?.parentId === owner) { trashPage(state, id); toast('페이지를 휴지통으로 옮겼습니다.'); }
+  for (const id of now) { const page = state.pages.find(p => p.id === id); if (!before.has(id) && page?.deleted && page.parentId === owner) restorePage(state, id); }
+}
 // Pages and database rows that hold a link to the page.
 function backlinksHTML(pageId) {
   const items = [];
@@ -286,9 +314,9 @@ function openRowPage(dbId, rowId) {
   state.activeId = dbId; rememberPage(dbId); ui.sidebar = false; ui.query = ''; ui.row = { db: dbId, id: rowId };
   removePopovers(); saveSidebar(); render(); $('.main-scroll').scrollTop = 0;
 }
-function addDatabase(parentId) {
+function addDatabase(parentId, then = null) {
   if (Object.keys(state.databases).length >= limits.databases) { toast('데이터베이스는 최대 200개까지 만들 수 있습니다.', true); return false; }
-  return addPage({ parentId, title: '새 데이터베이스', type: 'database', icon: 'table', blocks: [] }, page => { const db = makeDatabase(); db.activeViewId = db.views[0].id; state.databases[page.id] = db; });
+  return addPage({ parentId, title: '새 데이터베이스', type: 'database', icon: 'table', blocks: [] }, page => { const db = makeDatabase(); db.activeViewId = db.views[0].id; state.databases[page.id] = db; then?.(page); });
 }
 const panels = { filter: ['필터', filterPanelHTML], sort: ['정렬', sortPanelHTML], props: ['속성 편집', propsPanelHTML], view: ['보기 설정', viewPanelHTML] };
 function openPanel(name) {
@@ -363,7 +391,10 @@ function updateTitleUI() { $$('[data-page-name]').filter(el => el.dataset.pageNa
 const typeOptions = [ ['text', '텍스트', 'text', '일반 텍스트를 입력합니다', 'text paragraph 문단'], ['h1', '제목 1', 'text', '큰 섹션 제목', 'heading'], ['h2', '제목 2', 'text', '중간 크기의 제목', 'heading'], ['h3', '제목 3', 'text', '작은 크기의 제목', 'heading'], ['bullet', '글머리 기호', 'bullet', '간결하게 목록을 작성합니다', 'list 목록'], ['numbered', '번호 매기기 목록', 'numbered', '순서가 있는 목록을 작성합니다', 'list ordered 숫자'], ['todo', '할 일 목록', 'check', '완료할 일을 체크합니다', 'checkbox 체크'], ['toggle', '토글 목록', 'chevron', '내용을 접고 펼칩니다', 'collapse 접기'], ['quote', '인용', 'quote', '기억하고 싶은 문장', 'blockquote'], ['callout', '콜아웃', 'bulb', '중요한 정보를 강조합니다', '강조'], ['code', '코드', 'code', '고정폭 글꼴로 코드를 적습니다', 'pre 코드 블록'], ['divider', '구분선', 'more', '내용 사이에 여백을 만듭니다', 'hr line 선'], ['toc', '목차', 'numbered', '제목 블록으로 목차를 만듭니다', 'toc contents 차례'], ['page', '페이지 링크', 'file', '다른 페이지로 가는 링크를 넣습니다', 'link mention 링크 연결'] ];
 // The slash menu can also create a database, as a subpage of the current page.
 const databaseOption = ['database', '데이터베이스', 'table', '하위 페이지로 데이터베이스를 만듭니다', 'db 표 table'];
-const menuOptions = () => openRow() ? typeOptions : [...typeOptions, databaseOption];
+// "페이지" makes a new page inside this one; the block it was typed in becomes the link to it.
+const imageOption = ['image', '이미지', 'upload', '이미지 파일을 올려 넣습니다', 'image picture photo 사진 그림'];
+const subpageOption = ['subpage', '페이지', 'file', '이 페이지 안에 새 페이지를 만듭니다', 'page 하위 새 페이지 sub'];
+const menuOptions = () => openRow() ? [...typeOptions, imageOption] : [typeOptions[0], subpageOption, ...typeOptions.slice(1), imageOption, databaseOption];
 function removePopovers() { $$('.popover').forEach(el => el.remove()); ui.menu = null; ui.blockMenu = null; ui.slash = null; }
 function positionMenu(el, anchor) {
   if (!anchor) return;
@@ -667,7 +698,9 @@ function duplicateBlock(id) {
 }
 function undoRedo(redo) {
   const focused = document.activeElement?.dataset?.editBlock;
+  const linked = linkedPages();
   if (!(redo ? history.redo : history.undo)(doc())) { toast(redo ? '다시 실행할 작업이 없습니다.' : '실행 취소할 작업이 없습니다.'); return; }
+  settleChildren(linked);
   removePopovers(); persist(); render();
   const list = doc().blocks; focusBlock((list.find(b => b.id === focused) || list.at(-1)).id);
 }
@@ -691,9 +724,9 @@ document.addEventListener('click', event => {
     case 'collapse': ui.sidebar = false; if (window.innerWidth > 760) ui.collapsed = !ui.collapsed; saveSidebar(); render(); break;
     case 'favorite': current().favorite = !current().favorite; persist(); render(); break;
     case 'page-menu': renderPageMenu(); break;
-    case 'duplicate': if (state.pages.length >= 1000) { toast('페이지는 최대 1,000개까지 만들 수 있습니다.', true); break; } duplicatePage(state, state.pages.find(p => p.id === id) || current()); persist(); render(); toast('페이지를 복제했습니다.'); break;
-    case 'delete-page': trashPage(state, id || current().id); persist(); render(); toast('페이지를 휴지통으로 옮겼습니다.'); break;
-    case 'restore': restorePage(state, id); persist(); render(); refreshTrash(); toast('페이지를 복원했습니다.'); break;
+    case 'duplicate': if (state.pages.length >= 1000) { toast('페이지는 최대 1,000개까지 만들 수 있습니다.', true); break; } linkChild(duplicatePage(state, state.pages.find(p => p.id === id) || current())); persist(); render(); toast('페이지를 복제했습니다.'); break;
+    case 'delete-page': trash(id || current().id); persist(); render(); toast('페이지를 휴지통으로 옮겼습니다.'); break;
+    case 'restore': restore(id); persist(); render(); refreshTrash(); toast('페이지를 복원했습니다.'); break;
     case 'search': openSearch(); break;
     case 'library': openSearch(true); break;
     case 'search-open': closeModal(false); go(id); break;
@@ -763,14 +796,20 @@ document.addEventListener('click', event => {
     case 'append-block': { remember(); const b = block(); doc().blocks.push(b); persist(); render(); focusBlock(b.id); break; }
     case 'add-block': { remember(); const list = doc().blocks; const index = list.findIndex(b => b.id === id); const b = block(); if (indentOf(list[index])) b.indent = indentOf(list[index]); list.splice(subtreeEnd(list, index), 0, b); persist(); render(); focusBlock(b.id); break; }
     case 'block-menu': renderBlockMenu(id); break;
-    case 'block-type': { const b = doc().blocks.find(b => b.id === id); const type = target.dataset.type; if (type === 'page') { openPagePicker({ id, cut: ui.slash || b.text === '/' ? [0, b.text.length] : null }); break; } remember(); if (type === 'database') { b.text = ''; delete b.marks; removePopovers(); persist(); if (!addDatabase(current().id)) { render(); focusBlock(id); } break; } if (ui.slash) { convertBlock(b, type); break; } b.type = type; delete b.target; if (b.text === '/') b.text = ''; setMarks(b, marksOf(b)); removePopovers(); persist(); render(); focusBlock(id); break; }
+    case 'block-type': { const b = doc().blocks.find(b => b.id === id); const type = target.dataset.type; if (type === 'page') { openPagePicker({ id, cut: ui.slash || b.text === '/' ? [0, b.text.length] : null }); break; } if (type === 'image') { if (ui.slash || b.text === '/') { b.text = ''; delete b.marks; persist(); } removePopovers(); render(); focusBlock(id); chooseImages(id); break; } remember(); if (type === 'database' || type === 'subpage') {
+      // As in Notion: the block becomes the new page, and that page opens.
+      const link = page => { b.type = 'page'; b.target = page.id; b.checked = false; delete b.open; };
+      b.text = ''; delete b.marks; removePopovers(); persist();
+      if (!(type === 'database' ? addDatabase(current().id, link) : addPage({ parentId: current().id }, link))) { render(); focusBlock(id); }
+      break;
+    } if (ui.slash) { convertBlock(b, type); break; } b.type = type; delete b.target; if (b.text === '/') b.text = ''; setMarks(b, marksOf(b)); removePopovers(); persist(); render(); focusBlock(id); break; }
     case 'block-duplicate': duplicateBlock(id); break;
     case 'format': applyMark(target.dataset.type); break;
     case 'format-panel': ui.format.panel = ui.format.panel === target.dataset.panel ? null : target.dataset.panel; renderFormatBar(); if (ui.format.panel === 'link') $('#format-bar input').focus(); break;
     case 'format-color': applyMark(target.dataset.kind, target.dataset.value || null, ui.format); break;
     case 'format-unlink': applyMark('link', null, ui.format); break;
     case 'toggle-open': { const b = doc().blocks.find(b => b.id === id); remember(); b.open = b.open === false; persist(); render(); $(`[data-block-id="${id}"] .toggle-arrow`)?.focus(); break; }
-    case 'block-delete': { remember(); doc().blocks = doc().blocks.filter(b => b.id !== id); if (!doc().blocks.length) doc().blocks.push(block()); removePopovers(); persist(); render(); break; }
+    case 'block-delete': { remember(); const linked = linkedPages(); doc().blocks = doc().blocks.filter(b => b.id !== id); if (!doc().blocks.length) doc().blocks.push(block()); settleChildren(linked); removePopovers(); persist(); render(); break; }
     case 'block-up': case 'block-down': { remember(); const list = doc().blocks; const i = list.findIndex(b => b.id === id); const j = i + (action === 'block-up' ? -1 : 1); if (j >= 0 && j < list.length) [list[i], list[j]] = [list[j], list[i]]; removePopovers(); persist(); render(); break; }
     case 'move-page': { const page = state.pages.find(p => p.id === id) || current(); const excluded = descendants(state, page.id); showModal('move', '페이지 이동', `<form id="move-form" data-page-id="${esc(page.id)}"><label class="field-label">상위 페이지<select name="parent" aria-label="이동할 상위 페이지"><option value="">개인 페이지 (최상위)</option>${state.pages.filter(p => !p.deleted && !excluded.has(p.id)).map(p => `<option value="${esc(p.id)}" ${p.id === page.parentId ? 'selected' : ''}>${esc(pageName(p))}</option>`).join('')}</select></label><div class="form-footer"><span></span><button class="button primary">이동</button></div></form>`); break; }
     case 'workspace-menu': openWorkspaceMenu(target); break;
@@ -847,7 +886,7 @@ document.addEventListener('submit', event => {
     toast(`${josa(db.itemName, '을', '를')} 저장했습니다.`);
   }
   if (form.id === 'settings-form') { const name = String(data.get('name')).trim(); if (!name) return; state.settings.name = name; state.settings.theme = data.get('theme'); persist(); closeModal(false); render(); toast('설정을 저장했습니다.'); }
-  if (form.id === 'move-form') { try { const parent = data.get('parent') || null; movePage(state, form.dataset.pageId, parent); if (parent) ui.expanded.add(parent); saveSidebar(); closeModal(false); render(); toast('페이지를 이동했습니다.'); } catch (error) { toast(error.message, true); } }
+  if (form.id === 'move-form') { try { const parent = data.get('parent') || null; reparent(form.dataset.pageId, parent); if (parent) ui.expanded.add(parent); saveSidebar(); closeModal(false); render(); toast('페이지를 이동했습니다.'); } catch (error) { toast(error.message, true); } }
   if (form.id === 'rename-form') { const page = state.pages.find(p => p.id === form.dataset.pageId); page.title = String(data.get('title')).trim().slice(0, 500) || '제목 없음'; page.updatedAt = new Date().toISOString(); persist(false); closeModal(false); render(); }
   if (form.id === 'link-form') { const href = safeHref(data.get('href')); if (!href) { toast('http, https, mailto 주소만 연결할 수 있습니다.', true); return; } applyMark('link', href, ui.format); }
   if (form.id === 'emoji-form') { const emoji = firstEmoji(String(data.get('emoji'))); if (!emoji) { toast('이모지 하나를 입력해 주세요.', true); $('input', form).focus(); return; } setIcon(emoji); }
@@ -989,10 +1028,44 @@ function pasteText(el, text) {
   const merged = [...marksOf(last), ...shiftMarks(tail.marks, joint)]; last.text = (last.text + tail.text).slice(0, MAX_TEXT); setMarks(last, merged);
   persist(); render(); focusBlock(last.id, joint);
 }
+const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+const IMAGE_LIMIT = 20 * 1048576;
+const imagesIn = files => [...(files || [])].filter(file => file.type.startsWith('image/'));
+// Uploads the images and puts each in a block of its own below the block `anchorId`.
+async function insertImages(files, anchorId) {
+  let added = 0;
+  for (const file of files) {
+    if (!IMAGE_TYPES.includes(file.type)) { toast('PNG, JPG, GIF, WebP 이미지만 넣을 수 있습니다.', true); continue; }
+    if (file.size > IMAGE_LIMIT) { toast('이미지는 20MB까지 넣을 수 있습니다.', true); continue; }
+    if (!added) toast('이미지를 올리는 중…');
+    let saved; try { saved = await sync.uploadFile(file); } catch (error) { toast(error.message, true); continue; }
+    // The upload takes a while: the page may have changed meanwhile.
+    const list = doc().blocks; const at = list.findIndex(b => b.id === anchorId);
+    if (at < 0) { toast('페이지가 바뀌어 이미지를 넣지 못했습니다.', true); return; }
+    remember();
+    const anchor = list[at]; const image = { ...block('image', saved.name.slice(0, 200)), file: saved.id };
+    if (indentOf(anchor)) image.indent = indentOf(anchor);
+    // An empty line gives its place to the image and stays below it.
+    const empty = anchor.type === 'text' && !anchor.text;
+    list.splice(empty ? at : at + 1, 0, image);
+    if (!empty) anchorId = image.id;
+    if (list.at(-1) === image) list.push(block());
+    added++; persist(); render();
+    const next = list[list.indexOf(image) + 1]; if (next) focusBlock(next.id, 0);
+  }
+  if (added) toast(added > 1 ? `이미지 ${added}개를 넣었습니다.` : '이미지를 넣었습니다.');
+}
+function chooseImages(anchorId) {
+  const input = document.createElement('input'); input.type = 'file'; input.accept = IMAGE_TYPES.join(','); input.multiple = true;
+  input.addEventListener('change', () => { if (input.files.length) insertImages([...input.files], anchorId); });
+  input.click();
+}
 document.addEventListener('paste', event => {
   const el = (event.target.closest ? event.target : event.target.parentElement)?.closest('[data-edit-block]'); if (!el) return;
   event.preventDefault();
-  const text = (event.clipboardData?.getData('text/plain') || '').replace(/\r\n?/g, '\n'); if (text) pasteText(el, text);
+  const text = (event.clipboardData?.getData('text/plain') || '').replace(/\r\n?/g, '\n');
+  const images = text ? [] : imagesIn(event.clipboardData?.files);
+  if (images.length) insertImages(images, el.dataset.editBlock); else if (text) pasteText(el, text);
 });
 // Browser-native formatting commands would write markup this editor does not track.
 document.addEventListener('beforeinput', event => { if (event.target.dataset?.editBlock && event.inputType.startsWith('format')) event.preventDefault(); });
@@ -1035,7 +1108,7 @@ function onBlockKeydown(event, el) {
     }
     if (!index) return;
     event.preventDefault(); remember(); const previous = list[index - 1];
-    if (staticTypes.includes(previous.type)) { list.splice(index - 1, 1); persist(); render(); focusBlock(b.id, 0); return; }
+    if (staticTypes.includes(previous.type)) { const linked = linkedPages(); list.splice(index - 1, 1); settleChildren(linked); persist(); render(); focusBlock(b.id, 0); return; }
     const target = visibleNeighbor(index, -1) || previous; const joint = target.text.length;
     const merged = [...marksOf(target), ...shiftMarks(marksOf(b), joint)];
     target.text = (target.text + b.text).slice(0, MAX_TEXT); setMarks(target, merged); list.splice(index, 1); persist(); render(); focusBlock(target.id, joint); return;
@@ -1055,8 +1128,8 @@ function onBlockKeydown(event, el) {
   if (mod && !event.shiftKey && !event.altKey && key.toLowerCase() === 'd') { event.preventDefault(); duplicateBlock(b.id); }
 }
 document.addEventListener('dragstart', event => { const row = event.target.closest('[data-drag-row]'); const b = event.target.closest('[data-drag-block]'); if (row) { ui.draggedRow = row.dataset.dragRow; event.dataTransfer.setData('text/plain', ui.draggedRow); } if (b) { ui.draggedBlock = b.dataset.dragBlock; event.dataTransfer.setData('text/plain', ui.draggedBlock); } });
-document.addEventListener('dragover', event => { if (!event.target.closest) return; if ((ui.draggedRow && event.target.closest('[data-drop-group],[data-drop-date],[data-row]')) || (ui.draggedBlock && event.target.closest('[data-block-id]'))) event.preventDefault(); });
-document.addEventListener('drop', event => { const origin = event.target.closest ? event.target : event.target.parentElement; if (!ui.draggedBlock && !ui.draggedRow && !ui.draggedPage && origin?.closest('[data-edit-block]')) { event.preventDefault(); return; } const place = ui.draggedRow && event.target.closest('[data-drop-group],[data-drop-date],[data-row]'); const targetBlock = event.target.closest('[data-block-id]'); if (place) { event.preventDefault(); dropDraggedRow(place); } if (targetBlock && ui.draggedBlock) { event.preventDefault(); const list = doc().blocks; const from = list.findIndex(b => b.id === ui.draggedBlock); const to = list.findIndex(b => b.id === targetBlock.dataset.blockId); if (from >= 0 && to >= 0) { remember(); const [item] = list.splice(from, 1); list.splice(to, 0, item); persist(); render(); } } ui.draggedRow = null; ui.draggedBlock = null; });
+document.addEventListener('dragover', event => { if (!event.target.closest) return; if ((ui.draggedRow && event.target.closest('[data-drop-group],[data-drop-date],[data-row]')) || ((ui.draggedBlock || event.dataTransfer?.types.includes('Files')) && event.target.closest('[data-block-id]'))) event.preventDefault(); });
+document.addEventListener('drop', event => { const origin = event.target.closest ? event.target : event.target.parentElement; const dropped = imagesIn(event.dataTransfer?.files); const onto = origin?.closest('[data-block-id]'); if (dropped.length && onto) { event.preventDefault(); insertImages(dropped, onto.dataset.blockId); return; } if (!ui.draggedBlock && !ui.draggedRow && !ui.draggedPage && origin?.closest('[data-edit-block]')) { event.preventDefault(); return; } const place = ui.draggedRow && event.target.closest('[data-drop-group],[data-drop-date],[data-row]'); const targetBlock = event.target.closest('[data-block-id]'); if (place) { event.preventDefault(); dropDraggedRow(place); } if (targetBlock && ui.draggedBlock) { event.preventDefault(); const list = doc().blocks; const from = list.findIndex(b => b.id === ui.draggedBlock); const to = list.findIndex(b => b.id === targetBlock.dataset.blockId); if (from >= 0 && to >= 0) { remember(); const [item] = list.splice(from, 1); list.splice(to, 0, item); persist(); render(); } } ui.draggedRow = null; ui.draggedBlock = null; });
 document.addEventListener('dragend', () => { ui.draggedRow = null; ui.draggedBlock = null; });
 // Text typed into a cell is saved at once; the rows are sorted and filtered again when focus leaves them.
 document.addEventListener('focusout', event => { const root = event.target.closest?.('#database-results,#row-props'); if (root && ui.staleCells && !root.contains(event.relatedTarget)) setTimeout(() => { if (ui.staleCells) refreshDatabaseResults(); }, 0); });
@@ -1114,18 +1187,18 @@ document.addEventListener('dragover', event => {
 });
 document.addEventListener('drop', event => {
   const id = ui.draggedPage; if (!id) return;
-  const drop = pageDropPosition(event); const root = event.target.closest('[data-root-drop]'); const favorite = event.target.closest('[data-drop-favorite]'); const trash = event.target.closest('[data-action="trash"]');
-  if (!drop && !root && !favorite && !trash) return;
+  const drop = pageDropPosition(event); const root = event.target.closest('[data-root-drop]'); const favorite = event.target.closest('[data-drop-favorite]'); const toTrash = event.target.closest('[data-action="trash"]');
+  if (!drop && !root && !favorite && !toTrash) return;
   event.preventDefault(); clearPageDropHighlights(); document.documentElement.classList.remove('dragging-page'); ui.draggedPage = null;
   try {
-    if (trash) trashPage(state, id);
+    if (toTrash) trash(id);
     else if (drop) {
       const target = state.pages.find(p => p.id === drop.row.dataset.sidebarPage);
-      if (drop.position === 'inside') { movePage(state, id, target.id); ui.expanded.add(target.id); }
-      else { const siblings = state.pages.filter(p => !p.deleted && p.parentId === target.parentId && p.id !== id); const i = siblings.indexOf(target); const before = drop.position === 'before' ? target.id : siblings[i + 1]?.id || null; movePage(state, id, target.parentId, before); }
+      if (drop.position === 'inside') { reparent(id, target.id); ui.expanded.add(target.id); }
+      else { const siblings = state.pages.filter(p => !p.deleted && p.parentId === target.parentId && p.id !== id); const i = siblings.indexOf(target); const before = drop.position === 'before' ? target.id : siblings[i + 1]?.id || null; reparent(id, target.parentId, before); }
       ui.sidebarPrefs.pageSort = 'manual';
     } else if (favorite) state.pages.find(p => p.id === id).favorite = true;
-    else movePage(state, id, null);
+    else reparent(id, null);
     saveSidebar(); render();
   } catch (error) { toast(error.message, true); }
 });

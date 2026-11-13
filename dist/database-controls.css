@@ -252,3 +252,5 @@ html[data-theme="dark"] .page-cover{filter:brightness(.82) saturate(.9)}
 @media(max-width:760px){.meta-button{opacity:1}.icon-grid{grid-template-columns:repeat(10,1fr)}.icon-grid button{height:28px}.trash-row{flex-wrap:wrap}.row-actions{margin-left:auto}}
 @media(hover:none){.meta-button{opacity:1}}
 @media print{.sidebar,.add-block-line,.block-actions,.mobile-scrim,.topbar,.popover,.overlay,.toast,.block-tools,.block-grip,.document-bottom,.meta-button,.mobile-bar,.format-bar{display:none!important}.main-shell{margin-left:0!important;height:auto!important;display:block!important}.main-scroll{overflow:visible!important}body,html{height:auto!important;overflow:visible!important;background:#fff!important}.page-content{max-width:none!important;padding:0 24px!important}.cover{print-color-adjust:exact;-webkit-print-color-adjust:exact}}
+.image-block{margin:4px 0;min-width:0;flex:1}
+.image-block img{display:block;max-width:100%;height:auto;border-radius:4px}

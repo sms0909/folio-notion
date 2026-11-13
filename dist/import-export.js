@@ -167,6 +167,7 @@ function blocksHTML(blocks, titleOf) {
       case 'code': out.push(`<pre${pad}><code>${text}</code></pre>`); break;
       case 'divider': out.push('<hr>'); break;
       case 'toc': out.push(`<nav class="toc">${headings.map(([h, at]) => `<a href="#b-${at}" style="margin-left:${(Number(h.type[1]) - 1) * 16}px">${esc(h.text)}</a>`).join('')}</nav>`); break;
+      case 'image': out.push(`<p${pad}><img src="/api/files/${esc(b.file)}" alt="${esc(b.text)}" style="max-width:100%"></p>`); break;
       case 'page': out.push(`<p class="page-link"${pad}>→ ${esc(titleOf(b.target) ?? '삭제된 페이지')}</p>`); break;
       default: out.push(`<p${pad}>${text || '&nbsp;'}</p>`);
     }

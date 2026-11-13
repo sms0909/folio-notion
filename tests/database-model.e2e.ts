@@ -366,8 +366,82 @@ test('the slash menu creates a database subpage', async ({ screen, browser }) =>
   await expect(screen.getByLabel('페이지 제목')).toHaveValue('새 데이터베이스');
   const data = await stored(browser);
   const parent = data.pages.find((p: any) => p.title === '기획');
-  expect(parent.blocks[0].text).toBe('');
-  expect(data.pages.find((p: any) => p.title === '새 데이터베이스').parentId).toBe(parent.id);
+  const made = data.pages.find((p: any) => p.title === '새 데이터베이스');
+  expect(made.parentId).toBe(parent.id);
+  expect(parent.blocks[0]).toMatchObject({ type: 'page', target: made.id, text: '' });
+});
+
+test('the slash menu creates a new page in place and opens it, as Notion does', async ({ screen, browser }) => {
+  await screen.getByRole('button', '새 페이지', { exact: true }).tap();
+  await screen.getByLabel('페이지 제목').fill('상위 문서');
+  await screen.getByLabel('블록 1 내용').pressSequentially('/페이지');
+  await expect(screen.getByRole('option', '페이지', { exact: true })).toHaveAttribute('aria-selected', 'true');
+  await browser.keyboard.press('Enter');
+  await expect(screen.getByLabel('페이지 제목')).toBeFocused();
+  await browser.keyboard.type('안쪽 문서');
+  await screen.getByRole('button', '페이지 열기: 상위 문서', { exact: true }).tap();
+  await expect(screen.getByRole('button', '페이지 링크: 안쪽 문서', { exact: true })).toBeVisible();
+  const data = await stored(browser);
+  const parent = data.pages.find((p: any) => p.title === '상위 문서'); const child = data.pages.find((p: any) => p.title === '안쪽 문서');
+  expect(child.parentId).toBe(parent.id);
+  expect(parent.blocks[0]).toMatchObject({ type: 'page', target: child.id });
+  await browser.reload();
+  await screen.getByRole('button', '페이지 링크: 안쪽 문서', { exact: true }).tap();
+  await expect(screen.getByLabel('페이지 제목')).toHaveValue('안쪽 문서');
+});
+
+test('a subpage shows in its parent, and its block and the page go to the trash together', async ({ screen, browser }) => {
+  await screen.getByRole('button', '새 페이지', { exact: true }).tap();
+  await screen.getByLabel('페이지 제목').fill('상위 문서');
+  await screen.getByRole('button', '하위 페이지 추가').tap();
+  await expect(screen.getByLabel('페이지 제목')).toBeFocused();
+  await browser.keyboard.type('아이 문서');
+  await screen.getByRole('button', '페이지 열기: 상위 문서', { exact: true }).tap();
+  await expect(screen.getByRole('button', '페이지 링크: 아이 문서', { exact: true })).toBeVisible();
+  const pages = async () => { const data = await stored(browser); return { parent: data.pages.find((p: any) => p.title === '상위 문서'), child: data.pages.find((p: any) => p.title === '아이 문서') }; };
+  let { parent, child } = await pages();
+  expect(parent.blocks.map((b: any) => b.type)).toEqual(['page', 'text']);
+  expect(parent.blocks[0].target).toBe(child.id);
+  // Deleting the block moves the page to the trash; undo brings both back.
+  await screen.getByRole('button', '블록 1 메뉴').tap();
+  await screen.getByRole('button', '삭제').tap();
+  await expect(screen.getByRole('button', '페이지 링크: 아이 문서', { exact: true })).toHaveCount(0);
+  expect((await pages()).child.deleted).toBe(true);
+  await screen.getByLabel('블록 1 내용').tap();
+  await browser.keyboard.press('Control+z');
+  await expect(screen.getByRole('button', '페이지 링크: 아이 문서', { exact: true })).toBeVisible();
+  expect((await pages()).child.deleted).toBe(false);
+  // Trashing the page from its own menu takes the block out of the parent; restoring puts it back.
+  await screen.getByRole('button', '페이지 링크: 아이 문서', { exact: true }).tap();
+  await screen.getByRole('button', '페이지 더보기').tap();
+  await screen.getByRole('menuitem', '휴지통으로 이동').tap();
+  ({ parent, child } = await pages());
+  expect(child.deleted).toBe(true);
+  expect(parent.blocks.some((b: any) => b.type === 'page')).toBe(false);
+  await screen.getByRole('button', '휴지통', { exact: true }).tap();
+  await screen.getByRole('button', '복원: 아이 문서', { exact: true }).tap();
+  ({ parent, child } = await pages());
+  expect(child.deleted).toBe(false);
+  expect(parent.blocks.some((b: any) => b.type === 'page' && b.target === child.id)).toBe(true);
+});
+
+test('an image pasted into the editor is uploaded and shown as a block', async ({ screen, browser }) => {
+  await screen.getByRole('button', '새 페이지', { exact: true }).tap();
+  await screen.getByLabel('페이지 제목').fill('그림 문서');
+  await screen.getByLabel('블록 1 내용').tap();
+  await browser.evaluate(() => {
+    const bytes = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='), c => c.charCodeAt(0));
+    const data = new DataTransfer(); data.items.add(new File([bytes], '화면.png', { type: 'image/png' }));
+    document.activeElement!.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+  });
+  await expect(screen.getByRole('img', '화면.png')).toBeVisible();
+  const page = (await stored(browser)).pages.find((p: any) => p.title === '그림 문서');
+  expect(page.blocks.map((b: any) => b.type)).toEqual(['image', 'text']);
+  expect(page.blocks[0].file).toMatch(/^[0-9a-f-]{36}$/);
+  await browser.reload();
+  await expect(screen.getByRole('img', '화면.png')).toBeVisible();
+  const shown = async () => browser.evaluate(async () => { const img = document.querySelector<HTMLImageElement>('.image-block img')!; await img.decode(); return img.naturalWidth; });
+  expect(await shown()).toBe(1);
 });
 
 test('a backup carries properties, views and rows', async ({ screen, browser }) => {

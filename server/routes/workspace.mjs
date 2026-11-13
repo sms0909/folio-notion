@@ -11,6 +11,8 @@ const BIG = 32 * 1048576;
 export const FILE_LIMIT = 50 * 1048576;
 // 실행 파일과 브라우저가 화면으로 열 수 있는 문서는 받지 않는다. 받은 파일은 언제나 내려받기로만 돌려준다.
 const BLOCKED = new Set(['.exe', '.dll', '.bat', '.cmd', '.com', '.msi', '.scr', '.ps1', '.vbs', '.js', '.mjs', '.jar', '.sh', '.app', '.apk', '.html', '.htm', '.xhtml', '.svg', '.php', '.lnk', '.hta', '.cpl', '.reg']);
+// 이 형식의 그림만 화면에 바로 보여 준다(이미지 블록). SVG는 스크립트를 담을 수 있어 넣지 않는다.
+const INLINE = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 const fileDir = ws => resolve(config.dataDir, 'files', ws);
 
 export function workspaceRoutes(app) {
@@ -89,7 +91,10 @@ export function workspaceRoutes(app) {
     if (!file) return reply;
     const path = resolve(fileDir(file.workspace_id), file.id);
     try { await stat(path); } catch { return reply.code(404).send({ error: '파일을 찾을 수 없습니다.' }); }
-    return reply.header('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`).header('Cache-Control', 'private, no-store').type('application/octet-stream').send(createReadStream(path));
+    const name = `filename*=UTF-8''${encodeURIComponent(file.name)}`;
+    // 파일 내용은 바뀌지 않으므로 그림은 브라우저가 보관해 두고 다시 쓴다.
+    if (INLINE.has(file.mime)) return reply.header('Content-Disposition', `inline; ${name}`).header('Cache-Control', 'private, max-age=31536000, immutable').type(file.mime).send(createReadStream(path));
+    return reply.header('Content-Disposition', `attachment; ${name}`).header('Cache-Control', 'private, no-store').type('application/octet-stream').send(createReadStream(path));
   });
 
   // 지운 파일은 바로 없애지 않고 trash 폴더로 옮겨 둔다.

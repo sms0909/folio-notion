@@ -3,7 +3,7 @@
 export const MAX_INDENT = 6;
 export const MAX_TEXT = 100000;
 export const listTypes = ['bullet', 'numbered', 'todo', 'toggle'];
-export const staticTypes = ['divider', 'toc', 'page'];
+export const staticTypes = ['divider', 'toc', 'page', 'image'];
 // Zero-width placeholder the editor puts at the caret to carry pending formatting; never part of the text.
 export const HOLD = '​';
 const visible = data => data.replaceAll(HOLD, '');

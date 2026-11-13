@@ -2,7 +2,7 @@ import { validMarks, toMarkdown } from './richtext.js';
 import { CURRENT_VERSION, supportedVersions, migrate, keepBackup } from './migrate.js';
 import { projectDatabase, copyDatabase, validateDatabase, limits, statuses, priorities } from './database-model.js';
 export const STORAGE_KEY = 'folio.workspace.v1';
-export const blockTypes = ['text', 'h1', 'h2', 'h3', 'bullet', 'numbered', 'todo', 'toggle', 'quote', 'callout', 'code', 'divider', 'toc', 'page'];
+export const blockTypes = ['text', 'h1', 'h2', 'h3', 'bullet', 'numbered', 'todo', 'toggle', 'quote', 'callout', 'code', 'divider', 'toc', 'page', 'image'];
 // Built-in page covers: [name, label].
 export const covers = [['sunrise', '노을'], ['forest', '숲'], ['ocean', '바다'], ['dusk', '해질녘'], ['mint', '민트'], ['rose', '장미'], ['sand', '모래'], ['slate', '먹색']];
 export const TEMPLATE_LIMIT = 50;
@@ -18,7 +18,7 @@ export function initialWorkspace() {
     block('callout', '작게 시작하세요. 빈 줄에 / 를 입력하면 제목, 할 일, 인용 등 다양한 블록을 추가할 수 있어요.'),
   ] });
   const projects = makePage('프로젝트', { id: 'projects', icon: 'grid', type: 'database', favorite: true, blocks: [] });
-  const wiki = makePage('팀 위키', { id: 'wiki', icon: 'book', blocks: [block('h1', '함께 만드는 지식'), block('text', '자주 찾는 정보와 팀의 일하는 방식을 한곳에 정리해요.'), block('h2', '우리가 일하는 방식'), block('bullet', '명확하게 기록하고, 편하게 공유합니다.'), block('bullet', '작은 실험으로 더 좋은 방법을 발견합니다.'), block('todo', '새로운 팀원 온보딩 문서 작성')] });
+  const wiki = makePage('팀 위키', { id: 'wiki', icon: 'book', blocks: [block('h1', '함께 만드는 지식'), block('text', '자주 찾는 정보와 팀의 일하는 방식을 한곳에 정리해요.'), block('h2', '우리가 일하는 방식'), block('bullet', '명확하게 기록하고, 편하게 공유합니다.'), block('bullet', '작은 실험으로 더 좋은 방법을 발견합니다.'), block('todo', '새로운 팀원 온보딩 문서 작성'), { ...block('page'), target: 'meeting' }] });
   const ideas = makePage('아이디어 노트', { id: 'ideas', icon: 'bulb', blocks: [block('h2', '아직 다듬어지지 않아도 괜찮아요.'), block('text', '지금 떠오른 생각을 기록해 보세요.'), block('bullet', '한 주를 돌아보는 나만의 루틴 만들기'), block('quote', '위대한 일은 작은 일들이 모여 이루어진다.')] });
   const meeting = makePage('주간 회의', { id: 'meeting', parentId: 'wiki', icon: 'calendar', blocks: [block('h2', '이번 주의 이야기'), block('text', '논의할 주제를 여기에 적어 주세요.'), block('todo', '다음 액션 정리하기')] });
   return { version: CURRENT_VERSION, activeId: home.id, settings: { name: 'Goodus의 워크스페이스', theme: 'light' }, pages: [home, projects, wiki, ideas, meeting], databases: { projects: projectDatabase([
@@ -31,7 +31,8 @@ export function initialWorkspace() {
 const isText = (value, max = 100000) => typeof value === 'string' && value.length <= max;
 const isId = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,100}$/.test(value);
 // A page link block names its page in `target`; the page itself may be gone by now.
-const validBlock = b => !!b && isId(b.id) && blockTypes.includes(b.type) && isText(b.text) && typeof b.checked === 'boolean' && (b.indent === undefined || (Number.isInteger(b.indent) && b.indent >= 0 && b.indent <= 6)) && (b.open === undefined || typeof b.open === 'boolean') && (b.marks === undefined || validMarks(b.marks, b.text.length)) && (b.target === undefined || (b.type === 'page' && isId(b.target)));
+// An image block names its uploaded file in `file`; its text is the file name.
+const validBlock = b => !!b && isId(b.id) && blockTypes.includes(b.type) && isText(b.text) && typeof b.checked === 'boolean' && (b.indent === undefined || (Number.isInteger(b.indent) && b.indent >= 0 && b.indent <= 6)) && (b.open === undefined || typeof b.open === 'boolean') && (b.marks === undefined || validMarks(b.marks, b.text.length)) && (b.target === undefined || (b.type === 'page' && isId(b.target))) && (b.file === undefined || (b.type === 'image' && isId(b.file)));
 // Returns a copy of stored blocks under new ids, or throws when they are not usable.
 export function copyBlocks(list) {
   if (!Array.isArray(list) || list.length > 10000 || !list.every(validBlock)) throw new Error('블록 데이터가 올바르지 않습니다.');
@@ -156,6 +157,7 @@ export function pageMarkdown(page, titleOf = () => null) {
     counters.length = depth + 1; counters[depth] = b.type === 'numbered' ? (counters[depth] || 0) + 1 : 0;
     if (b.type === 'divider') return '---';
     if (b.type === 'page') return `${pad}→ ${titleOf(b.target) ?? '삭제된 페이지'}`;
+    if (b.type === 'image') return `${pad}![${b.text.replace(/[\[\]]/g, '')}](/api/files/${b.file})`;
     if (b.type === 'code') return [fence, ...b.text.split('\n'), fence].map(line => pad + line).join('\n');
     const text = toMarkdown(b.text, b.marks);
     if (b.type === 'numbered') return `${pad}${counters[depth]}. ${text}`;

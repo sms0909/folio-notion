@@ -191,6 +191,9 @@ export async function openWorkspace(id) {
   location.href = '/';
 }
 
+// Stores a file in the workspace. Resolves to { id, name, size, url }.
+export const uploadFile = file => api(`/api/workspaces/${workspace.id}/files?name=${encodeURIComponent(file.name || '이미지')}&type=${encodeURIComponent(file.type)}`, { method: 'POST', raw: file });
+
 // Saved versions of a page ("page history"), newest first.
 const versionsPath = pageId => `/api/workspaces/${workspace.id}/pages/${encodeURIComponent(pageId)}/versions`;
 export const listVersions = async pageId => (await api(versionsPath(pageId))).versions;
