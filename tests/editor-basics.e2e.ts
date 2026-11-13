@@ -216,6 +216,38 @@ test('undo and redo step through structural edits', async ({ screen, browser }) 
   await expect(screen.getByTestId('block-2')).toBeVisible();
 });
 
+test('a selected block is removed with Delete or Backspace, as in Notion', async ({ screen, browser }) => {
+  await screen.getByLabel('블록 1 내용').pressSequentially('첫 줄');
+  await screen.getByLabel('블록 1 내용').press('Enter');
+  await screen.getByLabel('블록 2 내용').pressSequentially('둘째 줄');
+  await screen.getByLabel('블록 2 내용').press('Enter');
+  await screen.getByLabel('블록 3 내용').pressSequentially('셋째 줄');
+  const selected = () => browser.evaluate(() => [...document.querySelectorAll('.block-row.selected')].map(row => row.textContent!.trim()));
+  // Clicking the handle selects the block; Delete removes it and selects the one that took its place.
+  await screen.getByRole('button', '블록 2 메뉴').tap();
+  expect(await selected()).toEqual(['둘째 줄']);
+  await browser.keyboard.press('Delete');
+  await expect(screen.getByTestId('block-3')).toHaveCount(0);
+  expect(await selected()).toEqual(['셋째 줄']);
+  // Esc while typing selects the block; the arrows move the selection; Backspace removes.
+  await screen.getByLabel('블록 2 내용').tap();
+  await browser.keyboard.press('Escape');
+  expect(await selected()).toEqual(['셋째 줄']);
+  await browser.keyboard.press('ArrowUp');
+  expect(await selected()).toEqual(['첫 줄']);
+  await browser.keyboard.press('Backspace');
+  await expect(screen.getByTestId('block-2')).toHaveCount(0);
+  await expect(screen.getByLabel('블록 1 내용')).toHaveText('셋째 줄');
+  // Enter goes back to typing, and Backspace is then an ordinary key again.
+  await browser.keyboard.press('Enter');
+  await expect(screen.getByLabel('블록 1 내용')).toBeFocused();
+  expect(await selected()).toEqual([]);
+  await browser.keyboard.press('Backspace');
+  await expect(screen.getByLabel('블록 1 내용')).toHaveText('셋째 ');
+  await browser.keyboard.press('Control+z'); await browser.keyboard.press('Control+z');
+  await expect(screen.getByTestId('block-2')).toBeVisible();
+});
+
 test('undo restores a block type change and typed text', async ({ screen }) => {
   await screen.getByLabel('블록 1 내용').fill('되돌릴 글');
   await screen.getByRole('button', '블록 1 메뉴').tap();

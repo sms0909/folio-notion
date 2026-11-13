@@ -705,7 +705,40 @@ function undoRedo(redo) {
   const list = doc().blocks; focusBlock((list.find(b => b.id === focused) || list.at(-1)).id);
 }
 
+function deleteBlock(id) {
+  const list = doc().blocks; const at = list.findIndex(b => b.id === id); if (at < 0) return;
+  remember(); const linked = linkedPages();
+  list.splice(at, 1); if (!list.length) list.push(block());
+  settleChildren(linked); removePopovers(); persist(); render();
+  return list[Math.min(at, list.length - 1)];
+}
+// A selected block, as in Notion: click its handle (or an image or divider), or press Esc while
+// typing in it. Delete or Backspace then removes the whole block; the arrows move the selection.
+const selectedRow = () => $('.block-row.selected');
+function clearSelected() { for (const row of $$('.block-row.selected')) row.classList.remove('selected'); }
+function selectBlock(id, blur = true) {
+  clearSelected(); const row = $(`[data-block-id="${id}"]`); if (!row) return;
+  row.classList.add('selected'); if (blur) document.activeElement?.blur?.();
+}
+document.addEventListener('focusin', event => { if (event.target.closest?.('[data-edit-block]')) clearSelected(); });
+document.addEventListener('keydown', event => {
+  const row = selectedRow();
+  if (event.key === 'Escape' && !row && event.target.dataset?.editBlock && !$('.popover') && !ui.modal && !event.isComposing) { selectBlock(event.target.dataset.editBlock); return; }
+  if (!row || ui.modal || event.ctrlKey || event.metaKey || event.altKey || event.target.matches('input,textarea,select,[contenteditable="true"]')) return;
+  const id = row.dataset.blockId;
+  if (event.key === 'Delete' || event.key === 'Backspace') {
+    event.preventDefault(); const next = deleteBlock(id); if (next) selectBlock(next.id);
+  } else if (event.target.closest('.popover,button')) return; // the keys belong to the menu or the button
+  else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+    event.preventDefault(); removePopovers();
+    let other = row; do { other = event.key === 'ArrowUp' ? other.previousElementSibling : other.nextElementSibling; } while (other && (!other.dataset.blockId || other.hidden));
+    if (other) { selectBlock(other.dataset.blockId); other.scrollIntoView({ block: 'nearest' }); }
+  } else if (event.key === 'Enter') { event.preventDefault(); removePopovers(); clearSelected(); focusBlock(id); }
+  else if (event.key === 'Escape') clearSelected();
+}, true);
 document.addEventListener('click', event => {
+  const still = event.target.closest('.block-image,.block-divider'); const handle = event.target.closest('[data-action="block-menu"]');
+  if (handle) selectBlock(handle.dataset.id, false); else if (still && !event.target.closest('.block-tools')) selectBlock(still.dataset.blockId); else if (!event.target.closest('.popover')) clearSelected();
   const link = event.target.closest('.block-input a[href]');
   if (link) { event.preventDefault(); if (getSelection().isCollapsed && safeHref(link.getAttribute('href'))) window.open(link.href, '_blank', 'noopener'); }
   const target = event.target.closest('[data-action]');
@@ -809,7 +842,7 @@ document.addEventListener('click', event => {
     case 'format-color': applyMark(target.dataset.kind, target.dataset.value || null, ui.format); break;
     case 'format-unlink': applyMark('link', null, ui.format); break;
     case 'toggle-open': { const b = doc().blocks.find(b => b.id === id); remember(); b.open = b.open === false; persist(); render(); $(`[data-block-id="${id}"] .toggle-arrow`)?.focus(); break; }
-    case 'block-delete': { remember(); const linked = linkedPages(); doc().blocks = doc().blocks.filter(b => b.id !== id); if (!doc().blocks.length) doc().blocks.push(block()); settleChildren(linked); removePopovers(); persist(); render(); break; }
+    case 'block-delete': deleteBlock(id); break;
     case 'block-up': case 'block-down': { remember(); const list = doc().blocks; const i = list.findIndex(b => b.id === id); const j = i + (action === 'block-up' ? -1 : 1); if (j >= 0 && j < list.length) [list[i], list[j]] = [list[j], list[i]]; removePopovers(); persist(); render(); break; }
     case 'move-page': { const page = state.pages.find(p => p.id === id) || current(); const excluded = descendants(state, page.id); showModal('move', '페이지 이동', `<form id="move-form" data-page-id="${esc(page.id)}"><label class="field-label">상위 페이지<select name="parent" aria-label="이동할 상위 페이지"><option value="">개인 페이지 (최상위)</option>${state.pages.filter(p => !p.deleted && !excluded.has(p.id)).map(p => `<option value="${esc(p.id)}" ${p.id === page.parentId ? 'selected' : ''}>${esc(pageName(p))}</option>`).join('')}</select></label><div class="form-footer"><span></span><button class="button primary">이동</button></div></form>`); break; }
     case 'workspace-menu': openWorkspaceMenu(target); break;
