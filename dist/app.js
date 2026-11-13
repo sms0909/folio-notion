@@ -179,7 +179,7 @@ function blockHTML(b, i, context) {
     ${b.type === 'todo' ? `<input class="todo-check" type="checkbox" data-check="${esc(b.id)}" aria-label="할 일 ${num} 완료" ${b.checked ? 'checked' : ''}>` : ''}
     ${b.type === 'bullet' ? '<span class="bullet-dot">•</span>' : ''}${b.type === 'callout' ? `<span class="callout-icon">${icon('bulb')}</span>` : ''}
     ${b.type === 'numbered' ? `<span class="number-marker" data-testid="block-${num}-number">${context.numbers[i]}.</span>` : ''}${b.type === 'toggle' ? `<button class="toggle-arrow ${open ? 'open' : ''}" data-action="toggle-open" data-id="${esc(b.id)}" aria-label="토글 ${num} ${open ? '접기' : '펼치기'}" aria-expanded="${open}">${icon('chevron')}</button>` : ''}
-    ${staticTypes.includes(b.type) ? staticHTML(b, context) : `<div class="block-input ${b.checked ? 'checked' : ''}" contenteditable="true" role="textbox" aria-multiline="true" maxlength="${MAX_TEXT}" aria-label="블록 ${num} 내용" data-edit-block="${esc(b.id)}" data-placeholder="${placeholders[b.type] || '내용을 입력하거나 / 로 블록 추가'}" spellcheck="false">${inlineHTML(b)}</div>`}
+    ${staticTypes.includes(b.type) ? staticHTML(b, context) : `<div class="block-input ${b.checked ? 'checked' : ''}" contenteditable="true" role="textbox" aria-multiline="true" maxlength="${MAX_TEXT}" aria-label="블록 ${num} 내용" data-edit-block="${esc(b.id)}" data-placeholder="${placeholders[b.type] || ''}" spellcheck="false">${inlineHTML(b)}</div>`}
   </div>`;
 }
 function editor(page) {
